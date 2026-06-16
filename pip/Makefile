@@ -23,11 +23,15 @@ STAMP    := $(VENV)/.stamp
 REQUIREMENTS ?= requirements.txt
 DEV_REQUIREMENTS ?= requirements-dev.txt
 
+# Docker image coordinates (override: make docker-build IMAGE=foo TAG=bar).
+IMAGE ?= pip-versions
+TAG   ?= lts-latest
+
 .DEFAULT_GOAL := help
 
 # ---- Phony targets ----------------------------------------------------------
 
-.PHONY: help venv setup install lint smoke test ci run clean
+.PHONY: help venv setup install lint smoke test ci run clean docker-build docker-run
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -63,7 +67,7 @@ lint: setup ## Byte-compile all modules to catch syntax errors
 smoke: setup ## Import modules and exercise the CLI + SDK entrypoints
 	$(VENV_PY) -c "import main, sdk, cli; print('imports OK')"
 	$(VENV_PY) main.py --help >/dev/null
-	$(VENV_PY) -c "import sdk; s = sdk.PipVersionsSDK.from_argv(['numpy', '--limit', '3', '--first-only']); assert s.config.package == 'numpy' and s.config.limit == 3; print('sdk OK')"
+	$(VENV_PY) -c "import sdk; s = sdk.PipVersionsSDK.from_argv(['numpy', '--limit', '3', '--first-only', '-v']); assert s.config.package == 'numpy' and s.config.limit == 3 and s.config.verbose is True; print('sdk OK')"
 	@echo ">> smoke OK"
 
 test: smoke ## No unit suite yet — run the smoke checks
@@ -72,6 +76,12 @@ ci: lint smoke ## What CI runs: lint + smoke on a fresh venv
 
 run: setup ## Launch the interactive REPL
 	$(VENV_PY) cli.py
+
+docker-build: ## Build the container image ($(IMAGE):$(TAG))
+	docker build -t $(IMAGE):$(TAG) .
+
+docker-run: ## Run the image; pass REPL args via ARGS="versions numpy"
+	docker run --rm $(IMAGE):$(TAG) $(ARGS)
 
 clean: ## Remove venvs (dev + test-install) and Python caches
 	rm -rf $(VENV) .venv-test-install __pycache__ .pytest_cache

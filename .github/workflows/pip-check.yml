@@ -39,6 +39,11 @@ on:
         required: false
         type: boolean
         default: false
+      verbose:
+        description: "Stream full pip output (debug install failures)"
+        required: false
+        type: boolean
+        default: false
       pip_version:
         description: "pip version to pin in the test env ('none' to skip)"
         required: false
@@ -81,6 +86,7 @@ jobs:
           INDEX_URL: ${{ inputs.index_url }}
           LIMIT: ${{ inputs.limit }}
           FIRST_ONLY: ${{ inputs.first_only }}
+          VERBOSE: ${{ inputs.verbose }}
           PIP_VERSION: ${{ inputs.pip_version }}
         run: |
           set -euo pipefail
@@ -88,6 +94,7 @@ jobs:
           [ -n "$INDEX_URL" ] && args+=(--index-url "$INDEX_URL")
           [ -n "$LIMIT" ]     && args+=(--limit "$LIMIT")
           [ "$FIRST_ONLY" = "true" ] && args+=(--first-only)
+          [ "$VERBOSE" = "true" ] && args+=(--verbose)
           echo "Running: main.py ${args[*]}"
           .venv/bin/python main.py "${args[@]}"
 

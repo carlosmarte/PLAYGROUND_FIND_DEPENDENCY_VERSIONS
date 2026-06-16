@@ -79,6 +79,7 @@ class Config:
     output: str = "installation_report.json"
     pip_version: Optional[str] = DEFAULT_PIP_VERSION  # None/"none" => keep bootstrapped pip
     limit: Optional[int] = None
+    verbose: bool = False  # stream full pip output so installs are debuggable
     env: dict = field(default_factory=dict)  # per-call overrides for ENV_DEFAULTS
 
 
@@ -141,6 +142,7 @@ class PipVersionsSDK:
             output=ns.output,
             pip_version=pip_version,
             limit=ns.limit,
+            verbose=ns.verbose,
         ))
 
     # -- config resolution -------------------------------------------------
@@ -169,7 +171,9 @@ class PipVersionsSDK:
         if self._pip_path is None:
             pv = self.config.pip_version
             pv = None if (pv is None or str(pv).lower() == "none") else pv
-            self._pip_path = main.setup_venv(self.config.venv_dir, pv, self.resolve_env())
+            self._pip_path = main.setup_venv(
+                self.config.venv_dir, pv, self.resolve_env(), verbose=self.config.verbose
+            )
         return self._pip_path
 
     # -- core operations ---------------------------------------------------
@@ -178,7 +182,8 @@ class PipVersionsSDK:
         """List versions the registry advertises (newest-first), capped by limit."""
         pkg = self._require_package(package)
         versions = main.get_available_versions(
-            pkg, self.effective_index_url(), self.resolve_env()
+            pkg, self.effective_index_url(), self.resolve_env(),
+            verbose=self.config.verbose,
         )
         return self._apply_limit(versions, limit)
 
@@ -227,7 +232,7 @@ class PipVersionsSDK:
         index_url = self.effective_index_url()
         cfg = self.resolve_env()
 
-        versions = main.get_available_versions(pkg, index_url, cfg)
+        versions = main.get_available_versions(pkg, index_url, cfg, verbose=self.config.verbose)
         versions = self._apply_limit(versions, limit)
         versions = self.before_probe(pkg, versions)
         if not versions:
@@ -236,7 +241,7 @@ class PipVersionsSDK:
         pip_path = self.ensure_pip()
         results = main.test_installations(
             pip_path, pkg, index_url, versions, self.config.output,
-            first_only=first_only, cfg=cfg,
+            first_only=first_only, cfg=cfg, verbose=self.config.verbose,
         )
         report = Report(
             package=pkg, index_url=index_url,

@@ -7,8 +7,14 @@ The REPL holds no engine logic of its own: it parses line input, maps it onto
 the SDK's ``config``, and calls SDK methods. Anything the REPL can do, an
 external caller can do by driving the same ``sdk.PipVersionsSDK`` directly.
 
-Run it:
+Run it interactively:
     python3 cli.py
+
+Or run a single command non-interactively (handy as a container entrypoint) by
+passing it as args — the tokens become one REPL command line, then the process
+exits:
+    python3 cli.py versions numpy
+    python3 cli.py run numpy --limit 5 --first-only -v
 
 Then, at the (pip-versions) prompt:
     registry https://my-registry.example.com/simple
@@ -16,6 +22,7 @@ Then, at the (pip-versions) prompt:
     find numpy            # install-test until the first version that works
     test numpy            # install-test every version, write a JSON report
     test numpy 10         # install-test only the newest 10 versions
+    verbose on            # stream full pip output to debug install failures
     help                  # full command list
     quit
 """
@@ -23,6 +30,7 @@ Then, at the (pip-versions) prompt:
 import cmd
 import os
 import shlex
+import sys
 
 import sdk
 
@@ -135,6 +143,25 @@ class PipVersionsREPL(cmd.Cmd):
             self.sdk.invalidate_venv()  # re-pin on next install-test
         print(f"pip-version = {self.cfg.pip_version}")
 
+    def do_verbose(self, arg):
+        """verbose [on|off]  — stream full pip output so installs are debuggable.
+
+        With no argument, toggles. When on, every find/test streams pip's live
+        output (and a copy lands in the report) so you can see why a version
+        failed to install.
+        """
+        arg = arg.strip().lower()
+        if arg in ("on", "true", "1", "yes"):
+            self.cfg.verbose = True
+        elif arg in ("off", "false", "0", "no"):
+            self.cfg.verbose = False
+        elif arg == "":
+            self.cfg.verbose = not self.cfg.verbose  # bare 'verbose' toggles
+        else:
+            print("Usage: verbose [on|off]")
+            return
+        print(f"verbose = {'on' if self.cfg.verbose else 'off'}")
+
     def do_show(self, arg):
         """show  — print the current session settings."""
         print(f"  index-url = {self.sdk.effective_index_url() or '(pip default)'}")
@@ -143,6 +170,7 @@ class PipVersionsREPL(cmd.Cmd):
         print(f"  output    = {self.cfg.output}")
         print(f"  venv-dir  = {self.cfg.venv_dir}")
         print(f"  pip       = {self.cfg.pip_version}")
+        print(f"  verbose   = {'on' if self.cfg.verbose else 'off'}")
 
     def do_env(self, arg):
         """env  — show the resolved pip/TLS env vars (os.environ or default)."""
@@ -220,9 +248,24 @@ class PipVersionsREPL(cmd.Cmd):
         pass  # do nothing on a blank line (default would repeat last command)
 
 
-def main():
+def main(argv=None):
+    """Run a single command from ``argv``, or an interactive shell if none.
+
+    Passing args runs them as one REPL command line and exits — this is what
+    makes the shell usable as a container entrypoint::
+
+        docker run <image> versions numpy        # -> REPL: `versions numpy`
+        docker run <image> run numpy --limit 5   # -> batch via main.main
+        docker run -it <image>                   # -> interactive REPL
+
+    """
+    argv = sys.argv[1:] if argv is None else argv
+    repl = PipVersionsREPL()
     try:
-        PipVersionsREPL().cmdloop()
+        if argv:
+            repl.onecmd(" ".join(argv))  # one-shot, then exit
+            return 0
+        repl.cmdloop()
     except KeyboardInterrupt:
         print("\nInterrupted.")
         return 130

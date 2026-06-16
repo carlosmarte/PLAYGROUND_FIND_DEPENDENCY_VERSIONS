@@ -98,10 +98,12 @@ def subprocess_env(cfg):
     return env
 
 
-def get_available_versions(package, index_url, cfg=None):
+def get_available_versions(package, index_url, cfg=None, verbose=False):
     """Return the list of versions a registry advertises for ``package``.
 
-    Versions are returned newest-first, mirroring ``pip index versions``.
+    Versions are returned newest-first, mirroring ``pip index versions``. When
+    ``verbose`` is set, the pip command and its raw output are echoed so a failed
+    or empty discovery can be debugged.
     """
     cfg = cfg or resolve_env()
     print(f"Retrieving versions for '{package}' from {index_url}...")
@@ -116,15 +118,21 @@ def get_available_versions(package, index_url, cfg=None):
     cmd += pip_options(cfg)
     if index_url:
         cmd += ["--index-url", index_url]
+    if verbose:
+        print(f"  $ {' '.join(cmd)}")
 
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, check=True, env=subprocess_env(cfg)
         )
     except subprocess.CalledProcessError as e:
+        if verbose:
+            _echo(e.stdout, e.stderr)
         print(f"Error running 'pip index versions': {e.stderr.strip()}", file=sys.stderr)
         sys.exit(1)
 
+    if verbose:
+        _echo(result.stdout)
     match = re.search(r"Available versions:\s*(.*)", result.stdout)
     if not match:
         print("Could not find 'Available versions:' in pip output.", file=sys.stderr)
@@ -132,12 +140,13 @@ def get_available_versions(package, index_url, cfg=None):
     return [v.strip() for v in match.group(1).split(",") if v.strip()]
 
 
-def setup_venv(env_dir, pip_version=DEFAULT_PIP_VERSION, cfg=None):
+def setup_venv(env_dir, pip_version=DEFAULT_PIP_VERSION, cfg=None, verbose=False):
     """Create a fresh virtual environment if needed; return its pip path.
 
     The venv's pip is pinned to ``pip_version`` (default ``DEFAULT_PIP_VERSION``)
     so install-tests run against a known pip. Pass ``pip_version=None`` to keep
-    whatever pip the venv was bootstrapped with.
+    whatever pip the venv was bootstrapped with. ``verbose`` echoes the pip-pin
+    output so a failed pin can be debugged.
     """
     cfg = cfg or resolve_env()
     if not os.path.exists(env_dir):
@@ -150,27 +159,27 @@ def setup_venv(env_dir, pip_version=DEFAULT_PIP_VERSION, cfg=None):
         pip_path = os.path.join(env_dir, "bin", "pip")  # macOS / Linux
 
     if pip_version:
-        _ensure_pip_version(pip_path, pip_version, cfg)
+        _ensure_pip_version(pip_path, pip_version, cfg, verbose=verbose)
     return pip_path
 
 
-def _ensure_pip_version(pip_path, pip_version, cfg=None):
+def _ensure_pip_version(pip_path, pip_version, cfg=None, verbose=False):
     """Pin the venv's pip to ``pip_version`` (bootstrapped from PyPI)."""
     cfg = cfg or resolve_env()
     print(f"Ensuring pip=={pip_version} in the test environment...")
-    try:
-        subprocess.run(
-            [pip_path, "install", "--disable-pip-version-check", f"pip=={pip_version}"]
-            + pip_options(cfg),
-            capture_output=True,
-            text=True,
-            check=True,
-            env=subprocess_env(cfg),
-        )
-    except subprocess.CalledProcessError as e:
+    cmd = (
+        [pip_path, "install", "--disable-pip-version-check", f"pip=={pip_version}"]
+        + pip_options(cfg)
+    )
+    if verbose:
+        print(f"  $ {' '.join(cmd)}")
+    res = subprocess.run(cmd, capture_output=True, text=True, env=subprocess_env(cfg))
+    if verbose:
+        _echo(res.stdout, res.stderr)
+    if res.returncode != 0:
         print(
             f"Warning: could not pin pip=={pip_version}: "
-            f"{_last_line(e.stderr) or 'unknown error'}",
+            f"{_last_line(res.stderr) or 'unknown error'}",
             file=sys.stderr,
         )
 
@@ -181,12 +190,46 @@ def _last_line(text):
     return lines[-1] if lines else ""
 
 
+def _echo(*texts):
+    """Write each non-empty text to stdout (newline-terminated). Verbose helper."""
+    for t in texts:
+        if t:
+            sys.stdout.write(t if t.endswith("\n") else t + "\n")
+
+
+def _has_verbose(options):
+    """True if pip ``options`` already carry a ``-v``/``-vv`` flag."""
+    return any(o.startswith("-v") for o in options)
+
+
+def _stream(cmd, env):
+    """Run ``cmd``, echoing combined output live while capturing it.
+
+    Returns ``(returncode, combined_output)``. Used in verbose mode so the user
+    watches pip in real time (e.g. a slow build or a hang) yet the captured text
+    still feeds the JSON report.
+    """
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
+    )
+    chunks = []
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        chunks.append(line)
+    proc.wait()
+    return proc.returncode, "".join(chunks)
+
+
 def test_installations(pip_path, package, index_url, versions, output_json,
-                       first_only=False, cfg=None):
+                       first_only=False, cfg=None, verbose=False):
     """Attempt to install each version; write an incremental JSON report.
 
     Returns the list of result dicts. If ``first_only`` is set, stops after
-    the first version that installs successfully.
+    the first version that installs successfully. When ``verbose`` is set, pip's
+    full output is streamed live (and a ``--verbose -v`` flag is added if none is
+    present) so install failures can be debugged; the captured output is also
+    folded into the report under ``log``/``error``.
     """
     cfg = cfg or resolve_env()
     env = subprocess_env(cfg)
@@ -208,22 +251,32 @@ def test_installations(pip_path, package, index_url, versions, output_json,
         cmd += options
         if index_url:
             cmd += ["--index-url", index_url]
+        # Bump pip's own verbosity if the user wants detail and nothing already set it.
+        if verbose and not _has_verbose(options):
+            cmd.append("-v")
 
-        try:
-            res = subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
+        if verbose:
+            print(f"  $ {' '.join(cmd)}")
+            returncode, output = _stream(cmd, env)
+            stdout_text = stderr_text = output  # streamed combined; same text both ways
+        else:
+            res = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            returncode, stdout_text, stderr_text = res.returncode, res.stdout, res.stderr
+
+        if returncode == 0:
             print(f"  ✅ SUCCESS: {target}")
             results.append({
                 "version": version,
                 "status": "success",
-                "log": _last_line(res.stdout),
+                "log": _last_line(stdout_text),
             })
             installable.append(version)
-        except subprocess.CalledProcessError as e:
+        else:
             print(f"  ❌ FAILED: {target}")
             results.append({
                 "version": version,
                 "status": "failed",
-                "error": _last_line(e.stderr) or "Unknown error",
+                "error": _last_line(stderr_text) or "Unknown error",
             })
 
         # Persist after every iteration so partial results survive a crash.
@@ -280,6 +333,12 @@ def parse_args(argv=None):
         action="store_true",
         help="Stop after the first version that installs successfully.",
     )
+    p.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Stream full pip output for every step so failures are debuggable.",
+    )
     return p.parse_args(argv)
 
 
@@ -289,7 +348,7 @@ def main(argv=None):
     cfg = resolve_env()
     index_url = resolve_index_url(args.index_url, cfg)
 
-    versions = get_available_versions(args.package, index_url, cfg)
+    versions = get_available_versions(args.package, index_url, cfg, verbose=args.verbose)
     if not versions:
         print("No versions found. Exiting.")
         return 1
@@ -300,7 +359,7 @@ def main(argv=None):
     print(f"Found {len(versions)} version(s) to test "
           f"(registry: {cfg['PYTHON_REGISTRY_NAME']}).")
     pip_version = None if str(args.pip_version).lower() == "none" else args.pip_version
-    pip_path = setup_venv(args.venv_dir, pip_version, cfg)
+    pip_path = setup_venv(args.venv_dir, pip_version, cfg, verbose=args.verbose)
     test_installations(
         pip_path,
         args.package,
@@ -309,6 +368,7 @@ def main(argv=None):
         args.output,
         first_only=args.first_only,
         cfg=cfg,
+        verbose=args.verbose,
     )
     return 0
 
