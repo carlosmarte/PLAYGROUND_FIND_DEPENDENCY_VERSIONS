@@ -1,0 +1,113 @@
+name: pip-versions
+
+# Two entry points:
+#   * push / PR touching pip/**  -> run `make ci` (lint + smoke)
+#   * manual "Run workflow"       -> run the version-check tool on a package
+#     you type in, mirroring `main.py` CLI flags as inputs.
+#
+# Lives at the repo root because GitHub only discovers workflows under
+# <repo-root>/.github/workflows/. Everything is scoped to the pip/ project
+# via path filters and `working-directory`.
+
+on:
+  push:
+    paths:
+      - "pip/**"
+      - ".github/workflows/pip-check.yml"
+  pull_request:
+    paths:
+      - "pip/**"
+      - ".github/workflows/pip-check.yml"
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Package to install-test (e.g. numpy)"
+        required: true
+        type: string
+      index_url:
+        description: "Package index URL (blank = PyPI / repo default)"
+        required: false
+        type: string
+        default: ""
+      limit:
+        description: "Only probe the newest N versions (blank = all)"
+        required: false
+        type: string
+        default: ""
+      first_only:
+        description: "Stop at the first version that installs"
+        required: false
+        type: boolean
+        default: false
+      pip_version:
+        description: "pip version to pin in the test env ('none' to skip)"
+        required: false
+        type: string
+        default: "26.1.1"
+
+defaults:
+  run:
+    working-directory: pip
+
+jobs:
+  # Automatic gate on every push / PR that touches the project.
+  ci:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: make ci
+        run: make ci
+
+  # Manual run: install-test a package's versions from typed input.
+  check:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Bootstrap venv
+        run: make setup PIP_VERSION="${{ inputs.pip_version }}"
+
+      - name: Run version check
+        env:
+          PACKAGE: ${{ inputs.package }}
+          INDEX_URL: ${{ inputs.index_url }}
+          LIMIT: ${{ inputs.limit }}
+          FIRST_ONLY: ${{ inputs.first_only }}
+          PIP_VERSION: ${{ inputs.pip_version }}
+        run: |
+          set -euo pipefail
+          args=("$PACKAGE" --pip-version "$PIP_VERSION" --output installation_report.json)
+          [ -n "$INDEX_URL" ] && args+=(--index-url "$INDEX_URL")
+          [ -n "$LIMIT" ]     && args+=(--limit "$LIMIT")
+          [ "$FIRST_ONLY" = "true" ] && args+=(--first-only)
+          echo "Running: main.py ${args[*]}"
+          .venv/bin/python main.py "${args[@]}"
+
+      - name: Summarize report
+        if: always()
+        run: |
+          if [ -f installation_report.json ]; then
+            cat installation_report.json
+            {
+              echo '### pip-versions report — `${{ inputs.package }}`'
+              echo '```json'
+              cat installation_report.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installation-report
+          path: pip/installation_report.json
+          if-no-files-found: ignore
