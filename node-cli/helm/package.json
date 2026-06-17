@@ -1,0 +1,20 @@
+{
+  "name": "helm-versions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Find pullable versions of a chart from a (custom) Helm chart repository.",
+  "type": "module",
+  "bin": {
+    "helm-versions": "cli.mjs"
+  },
+  "main": "sdk.mjs",
+  "scripts": {
+    "start": "node cli.mjs",
+    "check": "node --check main.mjs && node --check sdk.mjs && node --check cli.mjs",
+    "smoke": "node main.mjs --help >/dev/null && node -e \"import('./sdk.mjs').then(s=>{const x=s.HelmVersionsSDK.fromArgv(['bitnami/nginx','--limit','3','--first-only','-v']);if(x.config.package!=='bitnami/nginx'||x.config.limit!==3||x.config.verbose!==true)process.exit(1);console.log('sdk OK')})\""
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}

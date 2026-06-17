@@ -1,0 +1,10 @@
+# Build context hygiene — keep the image to the runtime modules + manifest.
+.pacman-test-install/
+node_modules/
+installation_report.json
+.make.stamp
+Makefile
+Dockerfile
+.dockerignore
+.gitignore
+*.md

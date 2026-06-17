@@ -64,7 +64,11 @@ Use the registry's natural CamelCase for the class prefix (e.g. `Cargo`, `Go`,
   index/registry-url precedence chain (`resolve_index_url` analog).
 - **`_UNSET` sentinel** for "argument not supplied" vs a meaningful `None`.
 - **`Report`** dataclass with `installable` / `failed` / `first_installable`
-  derived properties, `__iter__`, `__len__`.
+  derived properties, `__iter__`, `__len__`, plus an **output surface**
+  `to_dict()` / `to_json()` / `write_json(path)` (`toDict`/`toJson`/`writeJson`
+  in node — lowercase `json` to dodge the `JSON.stringify` hook). `to_dict()`'s
+  registry-url key mirrors THIS ecosystem's own field name (`index_url`,
+  `galaxy_server`, `forge_server`, `vagrant_server`, …).
 - **Extension hooks** `before_probe` / `after_probe`.
 - **Lazy provisioning + cache + `invalidate_venv()`** for the isolated test env.
 - **Subprocess orchestration**: build arg list, inject env, capture, classify
@@ -76,6 +80,11 @@ Use the registry's natural CamelCase for the class prefix (e.g. `Cargo`, `Go`,
   the tool-version command (`pip` analog), `verbose`, `show`, `env`, `versions`,
   `find`, `test [MAX]`, `run`, `quit/exit/EOF`. One-shot mode: args become one
   REPL line then exit (container-friendly).
+- **Inline `--output=PATH`** on any command: data commands (`versions`/`find`/
+  `test`) stash a structured payload (`{command, …Report.to_dict()}`) that is
+  written as JSON; other commands fall back to teed console text. Backed by the
+  SDK output surface above (and the module-level `versions_output()` funnel), so
+  an external caller gets the same JSON without driving the REPL.
 - **Pinned tool version**: one constant echoed across `main.py`, `Makefile`,
   `Dockerfile`.
 - **Makefile**: `help setup install lint smoke test ci run clean docker-build

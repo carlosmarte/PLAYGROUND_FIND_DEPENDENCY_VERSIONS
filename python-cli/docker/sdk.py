@@ -23,6 +23,15 @@ External one-liners::
     versions = sdk.versions("library/nginx")  # just list the tags the registry advertises
     report = sdk.find("library/nginx")        # stop at the first tag that pulls
 
+Structured output (call from any consuming script — no console scraping)::
+
+    report = sdk.test("library/nginx")
+    report.to_dict()                   # JSON-able dict (summary + per-version)
+    report.to_json()                   # -> str
+    report.write_json("report.json")   # -> writes the file, returns the path
+
+    sdk.versions_output("library/nginx")  # {'package', 'index_url', 'count', 'versions'}
+
 Object form (hold one per session, mutate ``.config`` freely)::
 
     s = sdk.DockerVersionsSDK(index_url="registry-1.docker.io", docker_version="27.3.1")
@@ -43,6 +52,7 @@ Raw passthrough (external -> SDK -> main, argv untouched)::
     sdk.DockerVersionsSDK().run(["library/nginx", "--limit", "5", "--first-only"])
 """
 
+import json
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -107,6 +117,36 @@ class Report:
     def first_installable(self) -> Optional[str]:
         inst = self.installable
         return inst[0] if inst else None
+
+    # -- output surface (callable from any consuming script) ---------------
+
+    def to_dict(self) -> dict:
+        """JSON-able view of this report — the canonical serialized shape.
+
+        Includes the derived ``installable``/``failed``/``first_installable``
+        rollups alongside the raw per-version ``results`` so a consumer can read
+        a summary without recomputing it.
+        """
+        return {
+            "package": self.package,
+            "index_url": self.index_url,
+            "output_path": self.output_path,
+            "count": len(self.results),
+            "installable": self.installable,
+            "failed": self.failed,
+            "first_installable": self.first_installable,
+            "results": self.results,
+        }
+
+    def to_json(self, indent: int = 2) -> str:
+        """Serialize this report to a JSON string."""
+        return json.dumps(self.to_dict(), indent=indent)
+
+    def write_json(self, path: str, indent: int = 2) -> str:
+        """Write this report as JSON to ``path``; return the path."""
+        with open(path, "w") as fh:
+            fh.write(self.to_json(indent=indent) + "\n")
+        return path
 
     def __iter__(self):
         return iter(self.results)
@@ -188,6 +228,22 @@ class DockerVersionsSDK:
         )
         return self._apply_limit(versions, limit)
 
+    def versions_output(self, package=None, limit=_UNSET) -> dict:
+        """JSON-able envelope for the advertised version list.
+
+        The structured counterpart to ``available_versions`` (which returns the
+        bare list): wraps it with the package, the effective index URL, and a
+        count so a consumer — or the REPL's ``--output`` flag — can serialize a
+        ``versions`` query straight to JSON.
+        """
+        found = self.available_versions(package, limit=limit)
+        return {
+            "package": self.config.package,
+            "index_url": self.effective_index_url(),
+            "count": len(found),
+            "versions": found,
+        }
+
     def find(self, package=None) -> Report:
         """Pull-test until the first tag that works; return a ``Report``."""
         return self._probe(package, limit=_UNSET, first_only=True)
@@ -256,6 +312,11 @@ class DockerVersionsSDK:
 def versions(package, **config) -> List[str]:
     """One-shot: list tags a registry advertises for ``package``."""
     return DockerVersionsSDK(package=package, **config).available_versions()
+
+
+def versions_output(package, **config) -> dict:
+    """One-shot: JSON-able envelope of the versions a registry advertises."""
+    return DockerVersionsSDK(package=package, **config).versions_output()
 
 
 def find(package, **config) -> Report:

@@ -1,0 +1,6 @@
+.npm-test-install
+.*-test-install
+node_modules
+installation_report.json
+.make.stamp
+.DS_Store

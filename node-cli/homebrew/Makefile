@@ -1,0 +1,69 @@
+# Makefile for homebrew-versions — Node setup, lint, and smoke checks.
+#
+# Quick start:
+#   make setup     # verify Node
+#   make ci        # what CI runs: setup + lint + smoke
+#
+# The project is dependency-free (Node built-ins only). Discovery is HTTP-only
+# (global fetch); the fetch-tests shell out to `brew`, which must be on PATH for
+# actual fetch-tests (the Docker image provides it).
+
+# ---- Config -----------------------------------------------------------------
+
+NODE     ?= node
+NPM      ?= npm
+# brew version main.mjs defaults to, so the dev environment matches the
+# fetch/cache behaviour the tool tests against.
+BREW_VERSION ?= 4.3.0
+
+# Sentinel marks a provisioned environment so `make setup` is a no-op once done.
+STAMP    := .make.stamp
+
+# Docker image coordinates (override: make docker-build IMAGE=foo TAG=bar).
+IMAGE ?= homebrew-versions
+TAG   ?= lts-latest
+
+.DEFAULT_GOAL := help
+
+# ---- Phony targets ----------------------------------------------------------
+
+.PHONY: help setup install lint smoke test ci run clean docker-build docker-run
+
+help: ## Show this help
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+
+setup: $(STAMP) ## Verify Node is available (idempotent)
+
+$(STAMP):
+	$(NODE) --version
+	@touch $(STAMP)
+	@echo ">> environment ready (targets brew $(BREW_VERSION))"
+
+install: setup ## Alias for setup
+
+lint: setup ## Syntax-check all modules to catch parse errors
+	$(NODE) --check main.mjs
+	$(NODE) --check sdk.mjs
+	$(NODE) --check cli.mjs
+
+smoke: setup ## Import modules and exercise the CLI + SDK entrypoints
+	$(NODE) main.mjs --help >/dev/null
+	$(NODE) -e "import('./sdk.mjs').then(s=>{const x=s.HomebrewVersionsSDK.fromArgv(['wget','--limit','3','--first-only','-v']);if(x.config.package!=='wget'||x.config.limit!==3||x.config.verbose!==true){console.error('sdk FAIL');process.exit(1)}console.log('sdk OK')})"
+	@echo ">> smoke OK"
+
+test: smoke ## No unit suite yet — run the smoke checks
+
+ci: lint smoke ## What CI runs: lint + smoke
+
+run: setup ## Launch the interactive REPL
+	$(NODE) cli.mjs
+
+docker-build: ## Build the container image ($(IMAGE):$(TAG))
+	docker build -t $(IMAGE):$(TAG) .
+
+docker-run: ## Run the image; pass REPL args via ARGS="versions wget"
+	docker run --rm $(IMAGE):$(TAG) $(ARGS)
+
+clean: ## Remove the test download cache, reports, and the setup stamp
+	rm -rf .venv-test-install node_modules installation_report.json $(STAMP)

@@ -30,6 +30,7 @@ Then, at the (maven-versions) prompt:
 import cmd
 import contextlib
 import io
+import json
 import os
 import shlex
 import sys
@@ -85,7 +86,8 @@ class MavenVersionsREPL(cmd.Cmd):
     intro = (
         "maven-versions interactive shell. Type 'help' or '?' for commands, "
         "'show' for current settings, 'quit' to exit. "
-        "Append --output=PATH to any command to also save its output to a file."
+        "Append --output=PATH to any command to also save its output: data "
+        "commands (versions/find/test) write structured JSON, others write text."
     )
     prompt = "(maven-versions) "
 
@@ -94,6 +96,9 @@ class MavenVersionsREPL(cmd.Cmd):
         # All session state lives in the SDK's config — the REPL is a view onto
         # it. Inject a custom/extended SDK via ``client`` to reuse this shell.
         self.sdk = client or sdk.MavenVersionsSDK()
+        # Structured payload the last data command produced, for --output JSON.
+        # Reset per command in onecmd; None means "no structured result".
+        self._last_payload = None
 
     # -- helpers -----------------------------------------------------------
 
@@ -231,15 +236,17 @@ class MavenVersionsREPL(cmd.Cmd):
     # -- action commands ---------------------------------------------------
 
     def do_versions(self, arg):
-        """versions [PACKAGE]  — list versions the repository advertises."""
+        """versions [PACKAGE]  — list versions the registry advertises."""
         pkg = self._resolve_package(arg)
         if not pkg:
             return
-        versions = self.sdk.available_versions(pkg)
+        payload = self.sdk.versions_output(pkg)
+        self._last_payload = {"command": "versions", **payload}
+        versions = payload["versions"]
         if not versions:
             print("No versions found.")
             return
-        print(f"{len(versions)} version(s) for '{pkg}':")
+        print(f"{payload['count']} version(s) for '{pkg}':")
         print("  " + ", ".join(versions))
 
     def do_find(self, arg):
@@ -248,7 +255,8 @@ class MavenVersionsREPL(cmd.Cmd):
         if not pkg:
             return
         try:
-            self.sdk.find(pkg)
+            report = self.sdk.find(pkg)
+            self._last_payload = {"command": "find", **report.to_dict()}
         except sdk.MavenVersionsError as e:
             print(e)
 
@@ -266,7 +274,8 @@ class MavenVersionsREPL(cmd.Cmd):
             return
         kwargs = {} if max_versions is None else {"limit": max_versions}
         try:
-            self.sdk.test(pkg, **kwargs)
+            report = self.sdk.test(pkg, **kwargs)
+            self._last_payload = {"command": "test", **report.to_dict()}
         except sdk.MavenVersionsError as e:
             print(e)
 
@@ -295,27 +304,44 @@ class MavenVersionsREPL(cmd.Cmd):
         """Dispatch one command, honoring an inline ``--output=PATH`` flag.
 
         Any command may carry ``--output=PATH`` (or ``--output PATH``): the flag
-        is stripped before dispatch, the command's console output is teed to the
-        screen while being captured, and the capture is written to PATH. ``run``
-        is exempt — it forwards ``--output`` to the underlying tool unchanged.
+        is stripped before dispatch and the result is written to PATH. Data
+        commands (``versions``/``find``/``test``) stash a structured payload in
+        ``self._last_payload`` and that is serialized to JSON; any other command
+        falls back to the console text, teed to the screen as it is captured.
+        ``run`` is exempt — it forwards ``--output`` to the underlying tool
+        unchanged.
         """
         cmd_name = self.parseline(line)[0]
         clean, output_path = _extract_output(line)
         if output_path is None or cmd_name == "run":
             return super().onecmd(line)
+        self._last_payload = None  # cleared so a stale payload can't leak through
         buf = io.StringIO()
         try:
             with contextlib.redirect_stdout(_Tee(sys.stdout, buf)):
                 stop = super().onecmd(clean)
         finally:
-            try:
-                with open(output_path, "w") as fh:
-                    fh.write(buf.getvalue())
-                print(f"Output written to {output_path}")
-            except OSError as exc:
-                print(f"Could not write output to {output_path}: {exc}",
-                      file=sys.stderr)
+            self._write_output(output_path, buf.getvalue())
         return stop
+
+    def _write_output(self, output_path, captured_text):
+        """Write the last command's result to ``output_path``.
+
+        Prefers the structured ``self._last_payload`` (rendered as JSON) so data
+        commands produce a machine-readable file; falls back to the captured
+        console text for commands that have no structured form (e.g. ``show``).
+        """
+        if self._last_payload is not None:
+            content = json.dumps(self._last_payload, indent=2) + "\n"
+        else:
+            content = captured_text
+        try:
+            with open(output_path, "w") as fh:
+                fh.write(content)
+            print(f"Output written to {output_path}")
+        except OSError as exc:
+            print(f"Could not write output to {output_path}: {exc}",
+                  file=sys.stderr)
 
     def emptyline(self):
         pass  # do nothing on a blank line (default would repeat last command)

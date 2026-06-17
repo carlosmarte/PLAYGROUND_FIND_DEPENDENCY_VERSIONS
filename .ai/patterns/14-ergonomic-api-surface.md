@@ -44,8 +44,12 @@ function run(argv):                     return Client().run(argv)
 - `PipVersionsSDK.from_argv(argv)` builds a client from a `main`-style argv list,
   mirroring the CLI (absent `--index-url` → `_UNSET`; `--pip-version none` →
   keep bootstrapped pip).
-- Module-level `versions()`, `find()`, `test()`, `run()` are one-shot funnels
-  documented as `external → SDK → main`.
+- Module-level `versions()`, `versions_output()`, `find()`, `test()`, `run()`
+  are one-shot funnels documented as `external → SDK → main`. `versions()`
+  returns the bare list; `versions_output()` returns the JSON-able envelope
+  (`{package, <index-url field>, count, versions}`) — the structured twin a
+  consuming script (or the REPL's `--output`) serializes without console
+  scraping. `sdk.mjs` mirrors these as `versions()` / `versionsOutput()`.
 
 ## Portability notes
 
