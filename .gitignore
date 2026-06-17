@@ -1,3 +1,5 @@
-/pip/.venv-test-install
-/pip/__pycache__
-pip/installation_report.json
+.venv-test-install
+__pycache__
+installation_report.json
+.DS_Store
+

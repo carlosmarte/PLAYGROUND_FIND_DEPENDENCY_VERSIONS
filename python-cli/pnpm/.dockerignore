@@ -1,0 +1,11 @@
+# Build context hygiene — keep the image to the three runtime modules.
+.venv/
+.pnpm-test-install/
+__pycache__/
+*.pyc
+installation_report.json
+Makefile
+Dockerfile
+.dockerignore
+.gitignore
+*.md
