@@ -28,6 +28,8 @@ Then, at the (npm-versions) prompt:
 """
 
 import cmd
+import contextlib
+import io
 import os
 import shlex
 import sys
@@ -35,10 +37,55 @@ import sys
 import sdk
 
 
+class _Tee(io.TextIOBase):
+    """A text stream that forwards every write to several underlying streams."""
+
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, text):
+        for stream in self._streams:
+            stream.write(text)
+        return len(text)
+
+    def flush(self):
+        for stream in self._streams:
+            stream.flush()
+
+
+def _extract_output(line):
+    """Split ``line`` into ``(clean_line, output_path)``.
+
+    Recognises an inline ``--output=PATH`` or ``--output PATH`` token anywhere in
+    the line, removes it, and returns the remaining command plus the path. When
+    no such token is present, returns the line unchanged and ``None``.
+    """
+    try:
+        tokens = shlex.split(line)
+    except ValueError:
+        return line, None  # unbalanced quotes: leave the line untouched
+    kept, output_path, i = [], None, 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token.startswith("--output="):
+            output_path = token[len("--output="):]
+        elif token == "--output":
+            if i + 1 < len(tokens):
+                output_path = tokens[i + 1]
+                i += 1
+        else:
+            kept.append(token)
+        i += 1
+    if output_path is None:
+        return line, None
+    return " ".join(shlex.quote(tok) for tok in kept), output_path
+
+
 class NpmVersionsREPL(cmd.Cmd):
     intro = (
         "npm-versions interactive shell. Type 'help' or '?' for commands, "
-        "'show' for current settings, 'quit' to exit."
+        "'show' for current settings, 'quit' to exit. "
+        "Append --output=PATH to any command to also save its output to a file."
     )
     prompt = "(npm-versions) "
 
@@ -243,6 +290,32 @@ class NpmVersionsREPL(cmd.Cmd):
 
     do_exit = do_quit
     do_EOF = do_quit  # Ctrl-D
+
+    def onecmd(self, line):
+        """Dispatch one command, honoring an inline ``--output=PATH`` flag.
+
+        Any command may carry ``--output=PATH`` (or ``--output PATH``): the flag
+        is stripped before dispatch, the command's console output is teed to the
+        screen while being captured, and the capture is written to PATH. ``run``
+        is exempt — it forwards ``--output`` to the underlying tool unchanged.
+        """
+        cmd_name = self.parseline(line)[0]
+        clean, output_path = _extract_output(line)
+        if output_path is None or cmd_name == "run":
+            return super().onecmd(line)
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(_Tee(sys.stdout, buf)):
+                stop = super().onecmd(clean)
+        finally:
+            try:
+                with open(output_path, "w") as fh:
+                    fh.write(buf.getvalue())
+                print(f"Output written to {output_path}")
+            except OSError as exc:
+                print(f"Could not write output to {output_path}: {exc}",
+                      file=sys.stderr)
+        return stop
 
     def emptyline(self):
         pass  # do nothing on a blank line (default would repeat last command)
