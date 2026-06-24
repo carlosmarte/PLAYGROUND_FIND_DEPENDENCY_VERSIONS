@@ -213,7 +213,8 @@ class NpmVersionsSDK:
             nv = self.config.npm_version
             nv = None if (nv is None or str(nv).lower() == "none") else nv
             self._pip_path = main.setup_venv(
-                self.config.venv_dir, nv, self.resolve_env(), verbose=self.config.verbose
+                self.config.venv_dir, nv, self.resolve_env(),
+                verbose=self.config.verbose, index_url=self.effective_index_url(),
             )
         return self._pip_path
 

@@ -150,9 +150,11 @@ export function getAvailableVersions(pkg, indexUrl, cfg = null, verbose = false)
  * The prefix's npm is pinned to `npmVersion` (default `DEFAULT_NPM_VERSION`)
  * so install-tests run against a known npm. Pass `npmVersion=null` to keep
  * whatever npm is on PATH. `verbose` echoes the npm-pin output so a failed pin
- * can be debugged.
+ * can be debugged. `indexUrl` is the resolved registry the pin is fetched from,
+ * so the pinned npm comes from the SAME registry the version probe and
+ * install-tests use (pass `null` for npm's default).
  */
-export function setupVenv(envDir, npmVersion = DEFAULT_NPM_VERSION, cfg = null, verbose = false) {
+export function setupVenv(envDir, npmVersion = DEFAULT_NPM_VERSION, cfg = null, verbose = false, indexUrl = null) {
   cfg = cfg || resolveEnv();
   if (!fs.existsSync(envDir)) {
     console.log(`Creating install prefix at: ${envDir}`);
@@ -164,15 +166,18 @@ export function setupVenv(envDir, npmVersion = DEFAULT_NPM_VERSION, cfg = null, 
     fs.writeFileSync(pkgJson, JSON.stringify({ name: "npm-versions-sandbox", private: true }));
   }
 
-  if (npmVersion) ensureNpmVersion(envDir, npmVersion, cfg, verbose);
+  if (npmVersion) ensureNpmVersion(envDir, npmVersion, cfg, verbose, indexUrl);
   return envDir;
 }
 
 /** Pin the sandbox's local npm to `npmVersion` (installed from the registry). */
-function ensureNpmVersion(envDir, npmVersion, cfg = null, verbose = false) {
+function ensureNpmVersion(envDir, npmVersion, cfg = null, verbose = false, indexUrl = null) {
   cfg = cfg || resolveEnv();
   console.log(`Ensuring npm==${npmVersion} in the test environment...`);
   const cmd = ["install", "--prefix", envDir, "--no-save", `npm@${npmVersion}`, ...npmOptions(cfg)];
+  // Fetch the pinned npm from the same registry as discovery / install-tests,
+  // not whatever ambient default npm would otherwise use.
+  if (indexUrl) cmd.push("--registry", indexUrl);
   if (verbose) console.log(`  $ npm ${cmd.join(" ")}`);
   const res = spawnSync("npm", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
   if (verbose) echo(res.stdout, res.stderr);
@@ -394,7 +399,7 @@ export async function main(argv = null) {
 
   console.log(`Found ${versions.length} version(s) to test (registry: ${cfg.NODE_REGISTRY_NAME}).`);
   const npmVersion = String(args.npmVersion).toLowerCase() === "none" ? null : args.npmVersion;
-  const prefixDir = setupVenv(args.venvDir, npmVersion, cfg, args.verbose);
+  const prefixDir = setupVenv(args.venvDir, npmVersion, cfg, args.verbose, indexUrl);
   await testInstallations(prefixDir, args.package, indexUrl, versions, args.output, {
     firstOnly: args.firstOnly, cfg, verbose: args.verbose,
   });

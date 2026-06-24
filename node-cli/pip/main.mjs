@@ -138,9 +138,11 @@ export function getAvailableVersions(pkg, indexUrl, cfg = null, verbose = false)
  * The venv's pip is pinned to `pipVersion` (default `DEFAULT_PIP_VERSION`)
  * so install-tests run against a known pip. Pass `pipVersion=null` to keep
  * whatever pip the venv was bootstrapped with. `verbose` echoes the pip-pin
- * output so a failed pin can be debugged.
+ * output so a failed pin can be debugged. `indexUrl` is the resolved registry
+ * the pin is fetched from, so the pinned pip comes from the SAME registry the
+ * version probe and install-tests use (pass `null` for pip's default).
  */
-export function setupVenv(envDir, pipVersion = DEFAULT_PIP_VERSION, cfg = null, verbose = false) {
+export function setupVenv(envDir, pipVersion = DEFAULT_PIP_VERSION, cfg = null, verbose = false, indexUrl = null) {
   cfg = cfg || resolveEnv();
   if (!fs.existsSync(envDir)) {
     console.log(`Creating virtual environment at: ${envDir}`);
@@ -158,17 +160,20 @@ export function setupVenv(envDir, pipVersion = DEFAULT_PIP_VERSION, cfg = null, 
     pipPath = path.join(envDir, "bin", "pip"); // macOS / Linux
   }
 
-  if (pipVersion) ensurePipVersion(pipPath, pipVersion, cfg, verbose);
+  if (pipVersion) ensurePipVersion(pipPath, pipVersion, cfg, verbose, indexUrl);
   return pipPath;
 }
 
-/** Pin the venv's pip to `pipVersion` (bootstrapped from PyPI). */
-function ensurePipVersion(pipPath, pipVersion, cfg = null, verbose = false) {
+/** Pin the venv's pip to `pipVersion` (fetched from the resolved registry). */
+function ensurePipVersion(pipPath, pipVersion, cfg = null, verbose = false, indexUrl = null) {
   cfg = cfg || resolveEnv();
   console.log(`Ensuring pip==${pipVersion} in the test environment...`);
   const cmd = [
     "install", "--disable-pip-version-check", `pip==${pipVersion}`, ...pipOptions(cfg),
   ];
+  // Fetch the pinned pip from the same registry as discovery / install-tests,
+  // not whatever ambient default pip would otherwise use.
+  if (indexUrl) cmd.push("--index-url", indexUrl);
   if (verbose) console.log(`  $ ${pipPath} ${cmd.join(" ")}`);
   const res = spawnSync(pipPath, cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
   if (verbose) echo(res.stdout, res.stderr);
@@ -383,7 +388,7 @@ export async function main(argv = null) {
 
   console.log(`Found ${versions.length} version(s) to test (registry: ${cfg.PYTHON_REGISTRY_NAME}).`);
   const pipVersion = String(args.pipVersion).toLowerCase() === "none" ? null : args.pipVersion;
-  const pipPath = setupVenv(args.venvDir, pipVersion, cfg, args.verbose);
+  const pipPath = setupVenv(args.venvDir, pipVersion, cfg, args.verbose, indexUrl);
   await testInstallations(pipPath, args.package, indexUrl, versions, args.output, {
     firstOnly: args.firstOnly, cfg, verbose: args.verbose,
   });

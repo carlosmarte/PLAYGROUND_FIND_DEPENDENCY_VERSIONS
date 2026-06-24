@@ -212,7 +212,8 @@ class PipVersionsSDK:
             pv = self.config.pip_version
             pv = None if (pv is None or str(pv).lower() == "none") else pv
             self._pip_path = main.setup_venv(
-                self.config.venv_dir, pv, self.resolve_env(), verbose=self.config.verbose
+                self.config.venv_dir, pv, self.resolve_env(),
+                verbose=self.config.verbose, index_url=self.effective_index_url(),
             )
         return self._pip_path
 

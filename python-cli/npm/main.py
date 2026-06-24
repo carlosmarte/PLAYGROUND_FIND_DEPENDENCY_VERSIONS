@@ -146,13 +146,16 @@ def get_available_versions(package, index_url, cfg=None, verbose=False):
     return list(reversed(versions))
 
 
-def setup_venv(env_dir, npm_version=DEFAULT_NPM_VERSION, cfg=None, verbose=False):
+def setup_venv(env_dir, npm_version=DEFAULT_NPM_VERSION, cfg=None, verbose=False, index_url=None):
     """Create a fresh install prefix if needed; return its directory path.
 
     The prefix's npm is pinned to ``npm_version`` (default
     ``DEFAULT_NPM_VERSION``) so install-tests run against a known npm. Pass
     ``npm_version=None`` to keep whatever npm is on PATH. ``verbose`` echoes the
-    npm-pin output so a failed pin can be debugged.
+    npm-pin output so a failed pin can be debugged. ``index_url`` is the resolved
+    registry the pin is fetched from, so the pinned npm comes from the SAME
+    registry the version probe and install-tests use (pass ``None`` for npm's
+    default).
     """
     cfg = cfg or resolve_env()
     if not os.path.exists(env_dir):
@@ -165,18 +168,22 @@ def setup_venv(env_dir, npm_version=DEFAULT_NPM_VERSION, cfg=None, verbose=False
             json.dump({"name": "npm-versions-sandbox", "private": True}, f)
 
     if npm_version:
-        _ensure_npm_version(env_dir, npm_version, cfg, verbose=verbose)
+        _ensure_npm_version(env_dir, npm_version, cfg, verbose=verbose, index_url=index_url)
     return env_dir
 
 
-def _ensure_npm_version(env_dir, npm_version, cfg=None, verbose=False):
-    """Pin the sandbox's local npm to ``npm_version`` (installed from the registry)."""
+def _ensure_npm_version(env_dir, npm_version, cfg=None, verbose=False, index_url=None):
+    """Pin the sandbox's local npm to ``npm_version`` (fetched from the resolved registry)."""
     cfg = cfg or resolve_env()
     print(f"Ensuring npm=={npm_version} in the test environment...")
     cmd = (
         ["npm", "install", "--prefix", env_dir, "--no-save", f"npm@{npm_version}"]
         + npm_options(cfg)
     )
+    # Fetch the pinned npm from the same registry as discovery / install-tests,
+    # not whatever ambient default npm would otherwise use.
+    if index_url:
+        cmd += ["--registry", index_url]
     if verbose:
         print(f"  $ {' '.join(cmd)}")
     res = subprocess.run(cmd, capture_output=True, text=True, env=subprocess_env(cfg))
@@ -378,7 +385,7 @@ def main(argv=None):
     print(f"Found {len(versions)} version(s) to test "
           f"(registry: {cfg['NODE_REGISTRY_NAME']}).")
     npm_version = None if str(args.npm_version).lower() == "none" else args.npm_version
-    pip_path = setup_venv(args.venv_dir, npm_version, cfg, verbose=args.verbose)
+    pip_path = setup_venv(args.venv_dir, npm_version, cfg, verbose=args.verbose, index_url=index_url)
     test_installations(
         pip_path,
         args.package,

@@ -231,7 +231,7 @@ export class PipVersionsSDK {
     if (this._pipPath === null) {
       let pv = this.config.pipVersion;
       pv = pv === null || String(pv).toLowerCase() === "none" ? null : pv;
-      this._pipPath = main.setupVenv(this.config.venvDir, pv, this.resolveEnv(), this.config.verbose);
+      this._pipPath = main.setupVenv(this.config.venvDir, pv, this.resolveEnv(), this.config.verbose, this.effectiveIndexUrl());
     }
     return this._pipPath;
   }

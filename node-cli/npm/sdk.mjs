@@ -230,7 +230,7 @@ export class NpmVersionsSDK {
     if (this._prefixDir === null) {
       let nv = this.config.npmVersion;
       nv = nv === null || String(nv).toLowerCase() === "none" ? null : nv;
-      this._prefixDir = main.setupVenv(this.config.venvDir, nv, this.resolveEnv(), this.config.verbose);
+      this._prefixDir = main.setupVenv(this.config.venvDir, nv, this.resolveEnv(), this.config.verbose, this.effectiveIndexUrl());
     }
     return this._prefixDir;
   }

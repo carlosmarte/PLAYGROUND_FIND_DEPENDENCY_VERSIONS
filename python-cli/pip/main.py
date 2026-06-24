@@ -140,13 +140,16 @@ def get_available_versions(package, index_url, cfg=None, verbose=False):
     return [v.strip() for v in match.group(1).split(",") if v.strip()]
 
 
-def setup_venv(env_dir, pip_version=DEFAULT_PIP_VERSION, cfg=None, verbose=False):
+def setup_venv(env_dir, pip_version=DEFAULT_PIP_VERSION, cfg=None, verbose=False, index_url=None):
     """Create a fresh virtual environment if needed; return its pip path.
 
     The venv's pip is pinned to ``pip_version`` (default ``DEFAULT_PIP_VERSION``)
     so install-tests run against a known pip. Pass ``pip_version=None`` to keep
     whatever pip the venv was bootstrapped with. ``verbose`` echoes the pip-pin
-    output so a failed pin can be debugged.
+    output so a failed pin can be debugged. ``index_url`` is the resolved
+    registry the pin is fetched from, so the pinned pip comes from the SAME
+    registry the version probe and install-tests use (pass ``None`` for pip's
+    default).
     """
     cfg = cfg or resolve_env()
     if not os.path.exists(env_dir):
@@ -159,18 +162,22 @@ def setup_venv(env_dir, pip_version=DEFAULT_PIP_VERSION, cfg=None, verbose=False
         pip_path = os.path.join(env_dir, "bin", "pip")  # macOS / Linux
 
     if pip_version:
-        _ensure_pip_version(pip_path, pip_version, cfg, verbose=verbose)
+        _ensure_pip_version(pip_path, pip_version, cfg, verbose=verbose, index_url=index_url)
     return pip_path
 
 
-def _ensure_pip_version(pip_path, pip_version, cfg=None, verbose=False):
-    """Pin the venv's pip to ``pip_version`` (bootstrapped from PyPI)."""
+def _ensure_pip_version(pip_path, pip_version, cfg=None, verbose=False, index_url=None):
+    """Pin the venv's pip to ``pip_version`` (fetched from the resolved registry)."""
     cfg = cfg or resolve_env()
     print(f"Ensuring pip=={pip_version} in the test environment...")
     cmd = (
         [pip_path, "install", "--disable-pip-version-check", f"pip=={pip_version}"]
         + pip_options(cfg)
     )
+    # Fetch the pinned pip from the same registry as discovery / install-tests,
+    # not whatever ambient default pip would otherwise use.
+    if index_url:
+        cmd += ["--index-url", index_url]
     if verbose:
         print(f"  $ {' '.join(cmd)}")
     res = subprocess.run(cmd, capture_output=True, text=True, env=subprocess_env(cfg))
@@ -359,7 +366,7 @@ def main(argv=None):
     print(f"Found {len(versions)} version(s) to test "
           f"(registry: {cfg['PYTHON_REGISTRY_NAME']}).")
     pip_version = None if str(args.pip_version).lower() == "none" else args.pip_version
-    pip_path = setup_venv(args.venv_dir, pip_version, cfg, verbose=args.verbose)
+    pip_path = setup_venv(args.venv_dir, pip_version, cfg, verbose=args.verbose, index_url=index_url)
     test_installations(
         pip_path,
         args.package,
