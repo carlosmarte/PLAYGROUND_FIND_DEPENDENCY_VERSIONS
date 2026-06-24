@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import urllib.error
@@ -210,9 +211,17 @@ def _ensure_docker_version(docker_path, docker_version, cfg=None, verbose=False)
         _echo(res.stdout, res.stderr)
     found = _last_line(res.stdout)
     if res.returncode != 0 or found != docker_version:
+        # A negative returncode means the child was killed by a signal, leaving
+        # stdout empty — fall back to the signal name so the failure isn't blank.
+        detail = found
+        if not detail and res.returncode is not None and res.returncode < 0:
+            try:
+                detail = f"terminated by signal {signal.Signals(-res.returncode).name}"
+            except ValueError:
+                detail = f"terminated by signal {-res.returncode}"
         print(
             f"Warning: could not pin docker=={docker_version}: "
-            f"client reports {found or 'unknown error'}",
+            f"client reports {detail or 'unknown error'}",
             file=sys.stderr,
         )
 

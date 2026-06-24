@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -117,7 +118,11 @@ def get_available_versions(package, index_url, cfg=None, verbose=False):
         "madison",
         package,
     ]
-    cmd += apt_options(cfg)
+    # Strip apt's verbose toggle (`-o Debug::pkgAcquire=true`) for this query: we
+    # only parse the pipe-separated madison rows, but Debug::pkgAcquire makes apt
+    # emit a line per acquired URL — a flood of output that bloats the captured
+    # buffer (and overflows the Node twin's spawnSync limit). Keep discovery quiet.
+    cmd += _strip_debug(apt_options(cfg))
     if verbose:
         print(f"  $ {' '.join(cmd)}")
 
@@ -128,7 +133,18 @@ def get_available_versions(package, index_url, cfg=None, verbose=False):
     except subprocess.CalledProcessError as e:
         if verbose:
             _echo(e.stdout, e.stderr)
-        print(f"Error running 'apt-cache madison': {e.stderr.strip()}", file=sys.stderr)
+        # A negative returncode means the child was killed by a signal, leaving
+        # stderr empty — fall back to the signal name so the failure isn't blank.
+        detail = (e.stderr or "").strip()
+        if not detail and e.returncode is not None and e.returncode < 0:
+            try:
+                detail = f"terminated by signal {signal.Signals(-e.returncode).name}"
+            except ValueError:
+                detail = f"terminated by signal {-e.returncode}"
+        print(
+            f"Error running 'apt-cache madison': {detail or 'unknown error'}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     except FileNotFoundError:
         print("Error: 'apt-cache' not found on PATH (run inside Debian/Ubuntu).", file=sys.stderr)
@@ -215,6 +231,27 @@ def _echo(*texts):
 def _has_verbose(options):
     """True if apt ``options`` already carry a Debug ``-o`` flag."""
     return any("Debug" in o for o in options)
+
+
+def _strip_debug(options):
+    """Return ``options`` with the verbose Debug toggle removed.
+
+    apt's verbosity is a two-token ``-o Debug::pkgAcquire=true`` pair (not
+    ``-v``), so drop any ``Debug::*`` value AND the bare ``-o`` flag that
+    introduces it, leaving the rest of the option list (timeouts, retries) intact.
+    """
+    out = []
+    i = 0
+    while i < len(options):
+        if options[i] == "-o" and i + 1 < len(options) and "Debug" in options[i + 1]:
+            i += 2  # skip both the "-o" and its "Debug::..." value
+            continue
+        if "Debug" in options[i]:  # stray Debug value with no -o
+            i += 1
+            continue
+        out.append(options[i])
+        i += 1
+    return out
 
 
 def _stream(cmd, env):

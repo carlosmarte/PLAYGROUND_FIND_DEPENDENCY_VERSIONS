@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -181,9 +182,17 @@ def _ensure_stack_version(stack_version, cfg=None, verbose=False):
     if verbose:
         _echo(res.stdout, res.stderr)
     if res.returncode != 0:
+        # A negative returncode means the child was killed by a signal, leaving
+        # stderr empty — fall back to the signal name so the warning isn't blank.
+        detail = _last_line(res.stderr)
+        if not detail and res.returncode < 0:
+            try:
+                detail = f"terminated by signal {signal.Signals(-res.returncode).name}"
+            except ValueError:
+                detail = f"terminated by signal {-res.returncode}"
         print(
             f"Warning: could not verify stack=={stack_version}: "
-            f"{_last_line(res.stderr) or 'stack not found'}",
+            f"{detail or 'stack not found'}",
             file=sys.stderr,
         )
 

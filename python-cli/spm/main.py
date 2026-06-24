@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 
@@ -118,7 +119,10 @@ def get_available_versions(package, index_url, cfg=None, verbose=False):
         "--tags",
         repo_url,
     ]
-    cmd += git_options(cfg)
+    # Strip `--verbose` from the discovery query: we only parse the small tag
+    # list, but verbose swift/git output is a flood that bloats the captured
+    # buffer (and overflows the Node twin's spawnSync limit). Keep it quiet.
+    cmd += _strip_verbose(git_options(cfg))
     if verbose:
         print(f"  $ {' '.join(cmd)}")
 
@@ -129,7 +133,18 @@ def get_available_versions(package, index_url, cfg=None, verbose=False):
     except subprocess.CalledProcessError as e:
         if verbose:
             _echo(e.stdout, e.stderr)
-        print(f"Error running 'git ls-remote --tags': {e.stderr.strip()}", file=sys.stderr)
+        # A negative returncode means the child was killed by a signal, leaving
+        # stderr empty — fall back to the signal name so the failure isn't blank.
+        detail = (e.stderr or "").strip()
+        if not detail and e.returncode is not None and e.returncode < 0:
+            try:
+                detail = f"terminated by signal {signal.Signals(-e.returncode).name}"
+            except ValueError:
+                detail = f"terminated by signal {-e.returncode}"
+        print(
+            f"Error running 'git ls-remote --tags': {detail or 'unknown error'}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if verbose:
@@ -232,6 +247,11 @@ def _echo(*texts):
 def _has_verbose(options):
     """True if ``options`` already carry a ``--verbose``/``-v`` flag."""
     return any(o.startswith("--verbose") or o == "-v" for o in options)
+
+
+def _strip_verbose(options):
+    """Return ``options`` with the ``--verbose`` verbosity flag removed."""
+    return [o for o in options if o != "--verbose"]
 
 
 def _stream(cmd, env, cwd=None):

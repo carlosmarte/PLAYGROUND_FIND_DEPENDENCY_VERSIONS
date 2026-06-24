@@ -184,7 +184,11 @@ function ensureGradleVersion(gradleVersion, cfg = null, verbose = false) {
   console.log(`Ensuring gradle==${gradleVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ gradle ${cmd.join(" ")}`);
-  const res = spawnSync("gradle", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("gradle", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (res.error && res.error.code === "ENOENT") {
     console.error(
       `Warning: could not pin gradle==${gradleVersion}: gradle not found on PATH`,
@@ -193,10 +197,13 @@ function ensureGradleVersion(gradleVersion, cfg = null, verbose = false) {
   }
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0 || !(res.stdout || "").includes(gradleVersion)) {
-    console.error(
-      `Warning: could not pin gradle==${gradleVersion}: ` +
-      `${lastLine(res.stdout) || lastLine(res.stderr) || "unknown error"}`,
-    );
+    // status is null when the child was killed by a signal — stdout/stderr are
+    // empty in that case, so fall back to the signal name / spawn error.
+    const detail = lastLine(res.stdout) || lastLine(res.stderr)
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
+    console.error(`Warning: could not pin gradle==${gradleVersion}: ${detail}`);
   }
 }
 
@@ -313,10 +320,18 @@ export async function testInstallations(sandbox, pkg, indexUrl, versions, output
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("gradle", cmd, { encoding: "utf8", env });
+      const res = spawnSync("gradle", cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
-      stderrText = res.stderr;
+      // status is null when the child was killed by a signal — stderr is empty
+      // in that case, so fall back to the signal name so the error isn't blank.
+      stderrText = res.stderr
+        || (res.status === null && res.signal && `terminated by signal ${res.signal}`)
+        || res.stderr;
     }
 
     if (returncode === 0) {

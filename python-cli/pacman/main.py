@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -122,8 +123,12 @@ def get_available_versions(package, index_url, cfg=None, verbose=False):
     versions = []
 
     # 1) Current version via `pacman -Si` (best-effort; may be unavailable).
+    # Strip any `--debug` from PACMAN_VERBOSE for this query: we only parse the
+    # single "Version :" line, but `--debug` pacman emits a flood of output — a
+    # flood that bloats the captured buffer (and overflows the Node twin's
+    # spawnSync limit). Keep the discovery query quiet.
     cmd = ["pacman", "-Si", package]
-    cmd += pacman_options(cfg)
+    cmd += _strip_verbose(pacman_options(cfg))
     if verbose:
         print(f"  $ {' '.join(cmd)}")
     try:
@@ -132,6 +137,17 @@ def get_available_versions(package, index_url, cfg=None, verbose=False):
         )
         if verbose:
             _echo(result.stdout, result.stderr)
+        # A negative returncode means the child was killed by a signal, leaving
+        # output empty — surface the signal name so the failure isn't swallowed.
+        if result.returncode != 0 and not (result.stdout or "").strip():
+            detail = (result.stderr or "").strip()
+            if not detail and result.returncode < 0:
+                try:
+                    detail = f"terminated by signal {signal.Signals(-result.returncode).name}"
+                except ValueError:
+                    detail = f"terminated by signal {-result.returncode}"
+            if verbose:
+                print(f"  (pacman -Si failed: {detail or 'unknown error'})")
         m = re.search(r"^Version\s*:\s*(\S+)", result.stdout, re.MULTILINE)
         if m:
             versions.append(m.group(1))
@@ -273,6 +289,11 @@ def _echo(*texts):
 def _has_verbose(options):
     """True if pacman ``options`` already carry a ``--debug`` flag."""
     return any(o == "--debug" for o in options)
+
+
+def _strip_verbose(options):
+    """Return ``options`` with any ``--debug`` verbosity flag removed."""
+    return [o for o in options if o != "--debug"]
 
 
 def _stream(cmd, env):

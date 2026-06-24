@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import urllib.error
@@ -190,9 +191,13 @@ def _ensure_vcpkg_version(sandbox_path, vcpkg_version, cfg=None, verbose=False):
     match = re.search(r"version\s+([0-9][\w.\-]*)", res.stdout or "")
     found = match.group(1) if match else ""
     if res.returncode != 0 or not found.startswith(vcpkg_version):
+        # A negative returncode means the child was killed by a signal, leaving
+        # no banner — surface the signal name rather than a misleading
+        # "unknown error".
+        detail = found or _signal_detail(res.returncode) or "unknown error"
         print(
             f"Warning: could not pin vcpkg=={vcpkg_version}: "
-            f"tool reports {found or 'unknown error'}",
+            f"tool reports {detail}",
             file=sys.stderr,
         )
 
@@ -201,6 +206,20 @@ def _last_line(text):
     """Return the last non-empty line of ``text`` (for compact logging)."""
     lines = [ln for ln in (text or "").strip().splitlines() if ln.strip()]
     return lines[-1] if lines else ""
+
+
+def _signal_detail(returncode):
+    """Describe a signal-kill (negative ``returncode``) as ``terminated by signal <name>``.
+
+    Returns an empty string when ``returncode`` is not a signal kill, so callers
+    can chain it after their stderr-derived detail.
+    """
+    if returncode is None or returncode >= 0:
+        return ""
+    try:
+        return f"terminated by signal {signal.Signals(-returncode).name}"
+    except ValueError:
+        return f"terminated by signal {-returncode}"
 
 
 def _echo(*texts):
@@ -281,10 +300,14 @@ def test_installations(sandbox_path, package, index_url, versions, output_json,
             installable.append(version)
         else:
             print(f"  ❌ FAILED: {target}")
+            # A negative returncode means the child was killed by a signal,
+            # leaving stderr empty — fall back to the signal name so the failure
+            # isn't recorded blank.
+            error = _last_line(stderr_text) or _signal_detail(returncode) or "Unknown error"
             results.append({
                 "version": version,
                 "status": "failed",
-                "error": _last_line(stderr_text) or "Unknown error",
+                "error": error,
             })
 
         # Persist after every iteration so partial results survive a crash.

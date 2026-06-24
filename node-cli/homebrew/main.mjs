@@ -195,13 +195,20 @@ function ensureBrewVersion(envDir, brewVersion, cfg = null, verbose = false) {
   console.log(`Ensuring brew>=${brewVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ brew ${cmd.join(" ")}`);
-  const res = spawnSync("brew", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("brew", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.error || res.status !== 0) {
-    console.error(
-      `Warning: could not verify brew>=${brewVersion}: ` +
-        `${lastLine(res.stderr) || "unknown error"}`,
-    );
+    // status is null when the child was killed by a signal — stderr is empty in
+    // that case, so fall back to the signal name / spawn error.
+    const detail = lastLine(res.stderr)
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
+    console.error(`Warning: could not verify brew>=${brewVersion}: ${detail}`);
   }
 }
 
@@ -295,10 +302,18 @@ export async function testInstallations(venvDir, formula, indexUrl, versions, ou
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("brew", cmd, { encoding: "utf8", env });
+      const res = spawnSync("brew", cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
-      stderrText = res.stderr;
+      // status is null when the child was killed by a signal — stderr is empty
+      // in that case, so fall back to the signal name so the error isn't blank.
+      stderrText = res.stderr
+        || (res.status === null && res.signal && `terminated by signal ${res.signal}`)
+        || res.stderr;
     }
 
     if (returncode === 0) {

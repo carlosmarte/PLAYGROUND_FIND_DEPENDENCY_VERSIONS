@@ -114,18 +114,32 @@ export function getAvailableVersions(pkg, indexUrl, cfg = null, verbose = false)
   cfg = cfg || resolveEnv();
   const repoUrl = pkg; // the package IS the git repo URL for SPM
   console.log(`Retrieving versions for '${pkg}' from ${repoUrl}...`);
+  // Strip `--verbose` from the discovery query: we only parse the small tag
+  // list, but verbose swift/git output can flood spawnSync's default 1MB
+  // buffer, killing the child (status=null) with an empty stderr.
   const cmd = [
     "ls-remote",
     "--tags",
     repoUrl,
-    ...gitOptions(cfg),
+    ...stripVerbose(gitOptions(cfg)),
   ];
   if (verbose) console.log(`  $ git ${cmd.join(" ")}`);
 
-  const res = spawnSync("git", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("git", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (res.status !== 0) {
     if (verbose) echo(res.stdout, res.stderr);
-    console.error(`Error running 'git ls-remote --tags': ${(res.stderr || "").trim()}`);
+    // status is null when the child was killed by a signal (e.g. spawnSync
+    // SIGTERM on buffer overflow) — stderr is empty in that case, so fall back
+    // to the signal name / spawn error so the failure isn't reported blank.
+    const detail = (res.stderr || "").trim()
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
+    console.error(`Error running 'git ls-remote --tags': ${detail}`);
     process.exit(1);
   }
 
@@ -212,7 +226,11 @@ function ensurePipVersion(envDir, swiftVersion, cfg = null, verbose = false) {
   console.log(`Ensuring swift==${swiftVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ swift ${cmd.join(" ")}`);
-  const res = spawnSync("swift", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("swift", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
     console.error(
@@ -237,6 +255,11 @@ function echo(...texts) {
 /** True if `options` already carry a `--verbose`/`-v` flag. */
 function hasVerbose(options) {
   return options.some((o) => o.startsWith("--verbose") || o === "-v");
+}
+
+/** git/swift `options` with the `--verbose` verbosity flag removed. */
+function stripVerbose(options) {
+  return options.filter((o) => o !== "--verbose");
 }
 
 /**
@@ -331,7 +354,12 @@ export async function testInstallations(pipPath, pkg, indexUrl, versions, output
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("swift", cmd, { encoding: "utf8", env, cwd: pipPath });
+      const res = spawnSync("swift", cmd, {
+        encoding: "utf8",
+        env,
+        cwd: pipPath,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

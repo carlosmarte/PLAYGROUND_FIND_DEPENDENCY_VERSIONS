@@ -186,15 +186,25 @@ function ensurePuppetVersion(puppetVersion, cfg = null, verbose = false) {
   console.log(`Ensuring puppet==${puppetVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ puppet ${cmd.join(" ")}`);
-  const res = spawnSync("puppet", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("puppet", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (res.error && res.error.code === "ENOENT") {
     console.error("Warning: puppet not found on PATH.");
     return;
   }
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
+    // status is null when the child was killed by a signal (stderr empty in that
+    // case) — fall back to the signal name so the warning isn't reported blank.
+    const detail = lastLine(res.stderr)
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
     console.error(
-      `Warning: could not verify puppet==${puppetVersion}: ${lastLine(res.stderr) || "unknown error"}`,
+      `Warning: could not verify puppet==${puppetVersion}: ${detail}`,
     );
   }
 }
@@ -290,7 +300,11 @@ export async function testInstallations(targetDir, pkg, forgeServer, versions, o
         returncode = code;
         stdoutText = stderrText = output; // streamed combined; same text both ways
       } else {
-        const res = spawnSync("puppet", cmd, { encoding: "utf8", env });
+        const res = spawnSync("puppet", cmd, {
+          encoding: "utf8",
+          env,
+          maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+        });
         returncode = res.status;
         stdoutText = res.stdout;
         stderrText = res.stderr;

@@ -108,17 +108,29 @@ export function subprocessEnv(cfg) {
 export function getAvailableVersions(pkg, indexUrl, cfg = null, verbose = false) {
   cfg = cfg || resolveEnv();
   console.log(`Retrieving versions for '${pkg}' from ${indexUrl}...`);
-  const cmd = ["view", pkg, "versions", "--json", ...npmOptions(cfg)];
+  // Strip any verbose `--loglevel` for this query: we only parse a tiny JSON
+  // blob, but a chatty loglevel (verbose/silly/debug) emits a flood of output
+  // — enough to overflow spawnSync's default 1MB buffer, which kills the child
+  // (status=null) and yields an empty stderr.
+  const cmd = ["view", pkg, "versions", "--json", ...stripVerbose(npmOptions(cfg))];
   if (indexUrl) cmd.push("--registry", indexUrl);
   if (verbose) console.log(`  $ npm ${cmd.join(" ")}`);
 
   const res = spawnSync("npm", cmd, {
     encoding: "utf8",
     env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
   });
   if (res.status !== 0) {
     if (verbose) echo(res.stdout, res.stderr);
-    console.error(`Error running 'npm view': ${(res.stderr || "").trim()}`);
+    // status is null when the child was killed by a signal (e.g. spawnSync
+    // SIGTERM on buffer overflow) — stderr is empty in that case, so fall back
+    // to the signal name / spawn error so the failure isn't reported blank.
+    const detail = (res.stderr || "").trim()
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
+    console.error(`Error running 'npm view': ${detail}`);
     process.exit(1);
   }
 
@@ -179,7 +191,11 @@ function ensureNpmVersion(envDir, npmVersion, cfg = null, verbose = false, index
   // not whatever ambient default npm would otherwise use.
   if (indexUrl) cmd.push("--registry", indexUrl);
   if (verbose) console.log(`  $ npm ${cmd.join(" ")}`);
-  const res = spawnSync("npm", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("npm", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
     console.error(
@@ -209,6 +225,30 @@ function hasVerbose(options) {
     if (o === "--loglevel" && ["verbose", "silly", "info"].includes(options[i + 1])) return true;
   }
   return false;
+}
+
+// npm loglevels that flood stdout/stderr — these are the ones worth stripping
+// from a discovery query whose output we parse as a tiny JSON blob.
+const VERBOSE_LOGLEVELS = ["verbose", "silly", "info", "http", "debug"];
+
+/**
+ * npm `options` with any verbose `--loglevel <level>` pair removed.
+ *
+ * `npmOptions` emits `--loglevel <NPM_CONFIG_LOGLEVEL>`; if that level is a
+ * chatty one (verbose/silly/debug/...) it can flood spawnSync's 1MB buffer on
+ * the discovery query, killing the child. Drop the flag+value pair for that
+ * case; quiet levels (warn/error) are left untouched.
+ */
+function stripVerbose(options) {
+  const out = [];
+  for (let i = 0; i < options.length; i++) {
+    if (options[i] === "--loglevel" && VERBOSE_LOGLEVELS.includes(options[i + 1])) {
+      i++; // skip the value too
+      continue;
+    }
+    out.push(options[i]);
+  }
+  return out;
 }
 
 /**
@@ -272,7 +312,11 @@ export async function testInstallations(prefixDir, pkg, indexUrl, versions, outp
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("npm", cmd, { encoding: "utf8", env });
+      const res = spawnSync("npm", cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

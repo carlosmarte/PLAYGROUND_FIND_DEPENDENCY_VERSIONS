@@ -111,23 +111,38 @@ export function subprocessEnv(cfg) {
 export function getAvailableVersions(pkg, indexUrl, cfg = null, verbose = false) {
   cfg = cfg || resolveEnv();
   console.log(`Retrieving versions for '${pkg}' from ${indexUrl}...`);
+  // Strip any `-v`/`-vv` from DNF_VERBOSE for this query: we only need the
+  // package list rows, but verbose dnf emits a flood of metadata / cache lines
+  // — enough output to overflow spawnSync's default 1MB buffer, which kills the
+  // child (status=null) and yields an empty stderr.
   const cmd = [
     "--showduplicates",
     "list",
     pkg,
-    ...dnfOptions(cfg),
+    ...stripVerbose(dnfOptions(cfg)),
   ];
   if (indexUrl) cmd.push("--repo", indexUrl);
   if (verbose) console.log(`  $ dnf ${cmd.join(" ")}`);
 
-  const res = spawnSync("dnf", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("dnf", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (res.error && res.error.code === "ENOENT") {
     console.error("Error: 'dnf' not found on PATH (run inside Fedora/RHEL).");
     process.exit(1);
   }
   if (res.status !== 0) {
     if (verbose) echo(res.stdout, res.stderr);
-    console.error(`Error running 'dnf list': ${(res.stderr || "").trim()}`);
+    // status is null when the child was killed by a signal (e.g. spawnSync
+    // SIGTERM on buffer overflow) — stderr is empty in that case, so fall back
+    // to the signal name / spawn error so the failure isn't reported blank.
+    const detail = (res.stderr || "").trim()
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
+    console.error(`Error running 'dnf list': ${detail}`);
     process.exit(1);
   }
 
@@ -185,7 +200,11 @@ function ensureDnfVersion(dnfVersion, cfg = null, verbose = false) {
   console.log(`Ensuring dnf==${dnfVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ dnf ${cmd.join(" ")}`);
-  const res = spawnSync("dnf", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("dnf", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   const have = res.stdout ? (res.stdout.split(/\r?\n/)[0] || "").trim() : "";
   if (res.status !== 0) {
@@ -215,6 +234,11 @@ function echo(...texts) {
 /** True if dnf `options` already carry a `-v`/`-vv` flag. */
 function hasVerbose(options) {
   return options.some((o) => o.startsWith("-v"));
+}
+
+/** dnf `options` with any `-v`/`-vv`/`-vvv` verbosity flag removed. */
+function stripVerbose(options) {
+  return options.filter((o) => !/^-v+$/.test(o));
 }
 
 /**
@@ -285,7 +309,11 @@ export async function testInstallations(downloadPath, pkg, indexUrl, versions, o
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("dnf", cmd, { encoding: "utf8", env });
+      const res = spawnSync("dnf", cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

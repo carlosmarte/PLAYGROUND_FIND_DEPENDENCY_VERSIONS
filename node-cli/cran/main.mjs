@@ -223,11 +223,22 @@ function ensureRVersion(libPath, rVersion, cfg = null, verbose = false) {
   console.log(`Ensuring R==${rVersion} in the test environment...`);
   const cmd = ["-e", "cat(as.character(getRversion()))"];
   if (verbose) console.log(`  $ Rscript ${cmd.join(" ")}`);
-  const res = spawnSync("Rscript", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("Rscript", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
+    // status is null when the child was killed by a signal (e.g. buffer
+    // overflow SIGTERM) — stderr is empty then, so fall back to the signal
+    // name / spawn error rather than report a blank/misleading message.
+    const detail = lastLine(res.stderr)
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
     console.error(
-      `Warning: could not confirm R==${rVersion}: ${lastLine(res.stderr) || "unknown error"}`,
+      `Warning: could not confirm R==${rVersion}: ${detail}`,
     );
   }
 }
@@ -310,17 +321,23 @@ export async function testInstallations(libPath, pkg, indexUrl, versions, output
       `quiet=${wantVerbose === "TRUE" ? "FALSE" : "TRUE"})`;
     const cmd = ["-e", expr];
 
-    let returncode, stdoutText, stderrText;
+    let returncode, stdoutText, stderrText, signal = null, spawnError = null;
     if (verbose) {
       console.log(`  $ Rscript ${cmd.join(" ")}`);
       const [code, output] = await stream(cmd, env);
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("Rscript", cmd, { encoding: "utf8", env });
+      const res = spawnSync("Rscript", cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;
+      signal = res.signal; // set when status is null (child killed by signal)
+      spawnError = res.error;
     }
 
     if (returncode === 0) {
@@ -329,7 +346,14 @@ export async function testInstallations(libPath, pkg, indexUrl, versions, output
       installable.push(version);
     } else {
       console.log(`  ❌ FAILED: ${target}`);
-      results.push({ version, status: "failed", error: lastLine(stderrText) || "Unknown error" });
+      // A null returncode means the child was killed by a signal (e.g. buffer
+      // overflow SIGTERM) — stderr is empty then, so fall back to the signal
+      // name / spawn error so the failure isn't recorded blank.
+      const error = lastLine(stderrText)
+        || (signal && `terminated by signal ${signal}`)
+        || (spawnError && spawnError.message)
+        || "Unknown error";
+      results.push({ version, status: "failed", error });
     }
 
     // Persist after every iteration so partial results survive a crash.

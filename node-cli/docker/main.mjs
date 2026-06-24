@@ -215,13 +215,23 @@ function ensureDockerVersion(dockerPath, dockerVersion, cfg = null, verbose = fa
   console.log(`Ensuring docker==${dockerVersion} in the test environment...`);
   const cmd = [...dockerOptions(cfg), "version", "--format", "{{.Client.Version}}"];
   if (verbose) console.log(`  $ ${dockerPath} ${cmd.join(" ")}`);
-  const res = spawnSync(dockerPath, cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync(dockerPath, cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   const found = lastLine(res.stdout);
   if (res.status !== 0 || found !== dockerVersion) {
+    // status is null when the child was killed by a signal — stdout is empty in
+    // that case, so fall back to the signal name / spawn error rather than blank.
+    const detail = found
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
     console.error(
       `Warning: could not pin docker==${dockerVersion}: ` +
-      `client reports ${found || "unknown error"}`,
+      `client reports ${detail}`,
     );
   }
 }
@@ -304,7 +314,11 @@ export async function testInstallations(dockerPath, pkg, indexUrl, versions, out
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync(dockerPath, cmd, { encoding: "utf8", env });
+      const res = spawnSync(dockerPath, cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

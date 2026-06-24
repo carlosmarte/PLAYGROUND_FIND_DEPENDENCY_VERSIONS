@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -111,7 +112,11 @@ def get_available_versions(package, index_url, cfg=None, verbose=False):
         "versions",
         "--json",
     ]
-    cmd += pnpm_options(cfg)
+    # Strip any verbose `--loglevel` for this query: we only parse a tiny JSON
+    # blob, but a chatty loglevel (verbose/silly/debug) emits a flood of output
+    # — a flood that bloats the captured buffer (and overflows the Node twin's
+    # spawnSync limit). Keep the discovery query quiet.
+    cmd += _strip_verbose(pnpm_options(cfg))
     if index_url:
         cmd += ["--registry", index_url]
     if verbose:
@@ -124,7 +129,15 @@ def get_available_versions(package, index_url, cfg=None, verbose=False):
     except subprocess.CalledProcessError as e:
         if verbose:
             _echo(e.stdout, e.stderr)
-        print(f"Error running 'pnpm view': {e.stderr.strip()}", file=sys.stderr)
+        # A negative returncode means the child was killed by a signal, leaving
+        # stderr empty — fall back to the signal name so the failure isn't blank.
+        detail = (e.stderr or "").strip()
+        if not detail and e.returncode is not None and e.returncode < 0:
+            try:
+                detail = f"terminated by signal {signal.Signals(-e.returncode).name}"
+            except ValueError:
+                detail = f"terminated by signal {-e.returncode}"
+        print(f"Error running 'pnpm view': {detail or 'unknown error'}", file=sys.stderr)
         sys.exit(1)
 
     if verbose:
@@ -215,6 +228,31 @@ def _has_verbose(options):
         ):
             return True
     return False
+
+
+# pnpm loglevels that flood stdout/stderr — these are the ones worth stripping
+# from a discovery query whose output we parse as a tiny JSON blob.
+_VERBOSE_LOGLEVELS = ("verbose", "silly", "info", "http", "debug")
+
+
+def _strip_verbose(options):
+    """Return ``options`` with any verbose ``--loglevel <level>`` pair removed.
+
+    ``pnpm_options`` emits ``--loglevel <NPM_CONFIG_LOGLEVEL>``; if that level
+    is a chatty one (verbose/silly/debug/...) it can flood the captured buffer
+    (and overflow the Node twin's spawnSync limit) on the discovery query. Drop
+    the flag+value pair for that case; quiet levels (warn/error) are untouched.
+    """
+    out = []
+    i = 0
+    while i < len(options):
+        if options[i] == "--loglevel" and i + 1 < len(options) and \
+                options[i + 1] in _VERBOSE_LOGLEVELS:
+            i += 2  # skip the flag and its value
+            continue
+        out.append(options[i])
+        i += 1
+    return out
 
 
 def _stream(cmd, env, cwd=None):

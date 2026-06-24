@@ -352,10 +352,19 @@ export async function testInstallations(pipPath, pkg, indexUrl, versions, output
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync(cmd[0], cmd.slice(1), { encoding: "utf8", env, cwd: pipPath });
+      const res = spawnSync(cmd[0], cmd.slice(1), {
+        encoding: "utf8",
+        env,
+        cwd: pipPath,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
-      stderrText = res.stderr;
+      // status is null when the child was killed by a signal — stderr is empty
+      // in that case, so fall back to the signal name so the error isn't blank.
+      stderrText = res.stderr
+        || (res.status === null && res.signal && `terminated by signal ${res.signal}`)
+        || res.stderr;
     }
 
     if (returncode === 0) {

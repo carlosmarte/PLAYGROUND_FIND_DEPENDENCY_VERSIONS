@@ -111,19 +111,34 @@ export function subprocessEnv(cfg) {
 export function getAvailableVersions(pkg, indexUrl, cfg = null, verbose = false) {
   cfg = cfg || resolveEnv();
   console.log(`Retrieving versions for '${pkg}' from ${indexUrl}...`);
+  // Strip any `-v`/`-vv` from APK_VERBOSE for this query: we only need the
+  // version blocks from `apk policy`, but verbose apk emits a flood of fetch /
+  // cache lines — enough output to overflow spawnSync's default 1MB buffer,
+  // which kills the child (status=null) and yields an empty stderr.
   let cmd = ["policy", pkg];
-  cmd = cmd.concat(apkOptions(cfg));
+  cmd = cmd.concat(stripVerbose(apkOptions(cfg)));
   if (indexUrl) cmd.push("--repository", indexUrl);
   if (verbose) console.log(`  $ apk ${cmd.join(" ")}`);
 
-  const res = spawnSync("apk", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("apk", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (res.error && res.error.code === "ENOENT") {
     console.error("Error: 'apk' not found on PATH (run inside Alpine).");
     process.exit(1);
   }
   if (res.status !== 0) {
     if (verbose) echo(res.stdout, res.stderr);
-    console.error(`Error running 'apk policy': ${(res.stderr || "").trim()}`);
+    // status is null when the child was killed by a signal (e.g. spawnSync
+    // SIGTERM on buffer overflow) — stderr is empty in that case, so fall back
+    // to the signal name / spawn error so the failure isn't reported blank.
+    const detail = (res.stderr || "").trim()
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
+    console.error(`Error running 'apk policy': ${detail}`);
     process.exit(1);
   }
 
@@ -162,7 +177,9 @@ function sortVersionsNewestFirst(versions, cfg = null) {
 
   const cmp = (a, b) => {
     const res = spawnSync("apk", ["version", "-t", a, b], {
-      encoding: "utf8", env: subprocessEnv(cfg),
+      encoding: "utf8",
+      env: subprocessEnv(cfg),
+      maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
     });
     if (res.error) {
       return (a > b) - (a < b);
@@ -207,7 +224,11 @@ function initdb(root, cfg = null, verbose = false) {
   cfg = cfg || resolveEnv();
   const cmd = ["add", "--root", root, "--initdb", "--allow-untrusted"];
   if (verbose) console.log(`  $ apk ${cmd.join(" ")}`);
-  const res = spawnSync("apk", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("apk", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
     console.error(
@@ -223,7 +244,11 @@ function ensureApkVersion(apkVersion, cfg = null, verbose = false) {
   console.log(`Ensuring apk-tools==${apkVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ apk ${cmd.join(" ")}`);
-  const res = spawnSync("apk", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("apk", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   const have = lastLine(res.stdout);
   if (res.status !== 0) {
@@ -255,6 +280,11 @@ function echo(...texts) {
 /** True if apk `options` already carry a `-v`/`-vv` flag. */
 function hasVerbose(options) {
   return options.some((o) => o.startsWith("-v"));
+}
+
+/** apk `options` with any `-v`/`-vv`/`-vvv` verbosity flag removed. */
+function stripVerbose(options) {
+  return options.filter((o) => !/^-v+$/.test(o));
 }
 
 /**
@@ -322,7 +352,11 @@ export async function testInstallations(rootPath, pkg, indexUrl, versions, outpu
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("apk", cmd, { encoding: "utf8", env });
+      const res = spawnSync("apk", cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

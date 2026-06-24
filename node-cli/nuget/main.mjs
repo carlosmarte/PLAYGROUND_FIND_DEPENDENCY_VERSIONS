@@ -163,12 +163,21 @@ export function setupVenv(envDir, dotnetVersion = DEFAULT_DOTNET_VERSION, cfg = 
     fs.mkdirSync(envDir, { recursive: true });
     const cmd = ["new", "classlib", "-o", envDir];
     if (verbose) console.log(`  $ dotnet ${cmd.join(" ")}`);
-    const res = spawnSync("dotnet", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+    const res = spawnSync("dotnet", cmd, {
+      encoding: "utf8",
+      env: subprocessEnv(cfg),
+      maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+    });
     if (verbose) echo(res.stdout, res.stderr);
     if (res.status !== 0) {
+      // status is null when the child was killed by a signal — stderr is empty
+      // in that case, so fall back to the signal name / spawn error, not blank.
+      const detail = lastLine(res.stderr)
+        || (res.signal && `terminated by signal ${res.signal}`)
+        || (res.error && res.error.message)
+        || "unknown error";
       console.error(
-        `Warning: could not scaffold the .NET project: ` +
-        `${lastLine(res.stderr) || "unknown error"}`,
+        `Warning: could not scaffold the .NET project: ${detail}`,
       );
     }
   }
@@ -183,12 +192,21 @@ function ensureDotnetVersion(envDir, dotnetVersion, cfg = null, verbose = false)
   console.log(`Ensuring dotnet>=${dotnetVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ dotnet ${cmd.join(" ")}`);
-  const res = spawnSync("dotnet", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("dotnet", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
+    // status is null when the child was killed by a signal — stderr is empty in
+    // that case, so fall back to the signal name / spawn error rather than blank.
+    const detail = lastLine(res.stderr)
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
     console.error(
-      `Warning: could not verify dotnet>=${dotnetVersion}: ` +
-      `${lastLine(res.stderr) || "unknown error"}`,
+      `Warning: could not verify dotnet>=${dotnetVersion}: ${detail}`,
     );
   }
 }
@@ -276,7 +294,11 @@ export async function testInstallations(venvDir, pkg, indexUrl, versions, output
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("dotnet", cmd, { encoding: "utf8", env });
+      const res = spawnSync("dotnet", cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

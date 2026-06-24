@@ -174,15 +174,26 @@ function ensureVagrantVersion(vagrantVersion, cfg = null, verbose = false) {
   console.log(`Ensuring vagrant==${vagrantVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ vagrant ${cmd.join(" ")}`);
-  const res = spawnSync("vagrant", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("vagrant", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (res.error && res.error.code === "ENOENT") {
     console.error("Warning: vagrant not found on PATH.");
     return;
   }
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
+    // status is null when the child was killed by a signal (e.g. buffer
+    // overflow SIGTERM) — stderr is empty then, so fall back to the signal
+    // name / spawn error rather than report a blank/misleading message.
+    const detail = lastLine(res.stderr)
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
     console.error(
-      `Warning: could not verify vagrant==${vagrantVersion}: ${lastLine(res.stderr) || "unknown error"}`,
+      `Warning: could not verify vagrant==${vagrantVersion}: ${detail}`,
     );
   }
 }
@@ -252,7 +263,7 @@ export async function testInstallations(vagrantHome, pkg, vagrantServer, version
     // Add into a throwaway VAGRANT_HOME per version so a successful add of one
     // does not satisfy/shadow the next.
     const tmp = fs.mkdtempSync(path.join(vagrantHome, "vagrant-"));
-    let returncode, stdoutText, stderrText;
+    let returncode, stdoutText, stderrText, signal = null, spawnError = null;
     try {
       const env = subprocessEnv(cfg);
       env.VAGRANT_HOME = tmp;
@@ -269,10 +280,16 @@ export async function testInstallations(vagrantHome, pkg, vagrantServer, version
         returncode = code;
         stdoutText = stderrText = output; // streamed combined; same text both ways
       } else {
-        const res = spawnSync("vagrant", cmd, { encoding: "utf8", env });
+        const res = spawnSync("vagrant", cmd, {
+          encoding: "utf8",
+          env,
+          maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+        });
         returncode = res.status;
         stdoutText = res.stdout;
         stderrText = res.stderr;
+        signal = res.signal; // set when status is null (child killed by signal)
+        spawnError = res.error;
       }
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -284,7 +301,14 @@ export async function testInstallations(vagrantHome, pkg, vagrantServer, version
       installable.push(version);
     } else {
       console.log(`  ❌ FAILED: ${target}`);
-      results.push({ version, status: "failed", error: lastLine(stderrText) || "Unknown error" });
+      // A null returncode means the child was killed by a signal (e.g. buffer
+      // overflow SIGTERM) — stderr is empty then, so fall back to the signal
+      // name / spawn error so the failure isn't recorded blank.
+      const error = lastLine(stderrText)
+        || (signal && `terminated by signal ${signal}`)
+        || (spawnError && spawnError.message)
+        || "Unknown error";
+      results.push({ version, status: "failed", error });
     }
 
     // Persist after every iteration so partial results survive a crash.

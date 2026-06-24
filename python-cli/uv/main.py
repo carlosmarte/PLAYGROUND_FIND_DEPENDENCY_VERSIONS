@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import urllib.request
@@ -114,7 +115,11 @@ def get_available_versions(package, index_url, cfg=None, verbose=False):
         "versions",
         package,
     ]
-    cmd += uv_options(cfg)
+    # Strip any -v/-vv from the discovery query: we only need the single
+    # "Available versions:" line, but verbose uv emits a flood of resolver
+    # output that bloats the captured buffer (and overflows the Node twin's
+    # spawnSync limit). Keep the discovery query quiet.
+    cmd += _strip_verbose(uv_options(cfg))
     if index_url:
         cmd += ["--index-url", index_url]
     if verbose:
@@ -131,7 +136,15 @@ def get_available_versions(package, index_url, cfg=None, verbose=False):
     except subprocess.CalledProcessError as e:
         if verbose:
             _echo(e.stdout, e.stderr)
-        print(f"'uv pip index versions' failed: {e.stderr.strip()}; "
+        # A negative returncode means the child was killed by a signal, leaving
+        # stderr empty — fall back to the signal name so the failure isn't blank.
+        detail = (e.stderr or "").strip()
+        if not detail and e.returncode is not None and e.returncode < 0:
+            try:
+                detail = f"terminated by signal {signal.Signals(-e.returncode).name}"
+            except ValueError:
+                detail = f"terminated by signal {-e.returncode}"
+        print(f"'uv pip index versions' failed: {detail or 'unknown error'}; "
               "falling back to PyPI JSON API.", file=sys.stderr)
         return _versions_from_pypi(package, cfg, verbose=verbose)
 
@@ -238,6 +251,11 @@ def _echo(*texts):
 def _has_verbose(options):
     """True if uv ``options`` already carry a ``-v``/``-vv`` flag."""
     return any(o.startswith("-v") for o in options)
+
+
+def _strip_verbose(options):
+    """Return ``options`` with any ``-v``/``-vv``/``-vvv`` verbosity flag removed."""
+    return [o for o in options if not re.fullmatch(r"-v+", o)]
 
 
 def _stream(cmd, env):

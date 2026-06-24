@@ -112,17 +112,29 @@ export function subprocessEnv(cfg) {
 export function getAvailableVersions(pkg, indexUrl, cfg = null, verbose = false) {
   cfg = cfg || resolveEnv();
   console.log(`Retrieving versions for '${pkg}' from ${indexUrl}...`);
-  const cmd = ["search", pkg, "--json", ...condaOptions(cfg)];
+  // Strip any `-v`/`-vv` from CONDA_VERBOSE for this query: we only need the
+  // `--json` payload, but verbose conda interleaves a flood of solver / fetch
+  // lines — enough output to overflow spawnSync's default 1MB buffer, which
+  // kills the child (status=null) and yields an empty stderr.
+  const cmd = ["search", pkg, "--json", ...stripVerbose(condaOptions(cfg))];
   if (indexUrl) cmd.push("-c", indexUrl, "--override-channels");
   if (verbose) console.log(`  $ ${CONDA_BIN} ${cmd.join(" ")}`);
 
   const res = spawnSync(CONDA_BIN, cmd, {
     encoding: "utf8",
     env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
   });
   if (res.status !== 0) {
     if (verbose) echo(res.stdout, res.stderr);
-    console.error(`Error running 'conda search': ${(res.stderr || "").trim()}`);
+    // status is null when the child was killed by a signal (e.g. spawnSync
+    // SIGTERM on buffer overflow) — stderr is empty in that case, so fall back
+    // to the signal name / spawn error so the failure isn't reported blank.
+    const detail = (res.stderr || "").trim()
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
+    console.error(`Error running 'conda search': ${detail}`);
     process.exit(1);
   }
 
@@ -211,7 +223,11 @@ function ensureCondaVersion(prefixRoot, condaVersion, cfg = null, verbose = fals
   console.log(`Ensuring conda==${condaVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ ${CONDA_BIN} ${cmd.join(" ")}`);
-  const res = spawnSync(CONDA_BIN, cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync(CONDA_BIN, cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
     console.error(
@@ -236,6 +252,11 @@ function echo(...texts) {
 /** True if conda `options` already carry a `-v`/`-vv` flag. */
 function hasVerbose(options) {
   return options.some((o) => o.startsWith("-v"));
+}
+
+/** conda `options` with any `-v`/`-vv`/`-vvv` verbosity flag removed. */
+function stripVerbose(options) {
+  return options.filter((o) => !/^-v+$/.test(o));
 }
 
 /**
@@ -302,7 +323,11 @@ export async function testInstallations(prefixRoot, pkg, indexUrl, versions, out
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync(CONDA_BIN, cmd, { encoding: "utf8", env });
+      const res = spawnSync(CONDA_BIN, cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

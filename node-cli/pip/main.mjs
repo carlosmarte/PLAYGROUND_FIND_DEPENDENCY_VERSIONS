@@ -161,6 +161,7 @@ export function setupVenv(envDir, pipVersion = DEFAULT_PIP_VERSION, cfg = null, 
     const res = spawnSync(PYTHON, ["-m", "venv", envDir], {
       encoding: "utf8",
       env: subprocessEnv(cfg),
+      maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
     });
     if (res.status !== 0 && verbose) echo(res.stdout, res.stderr);
   }
@@ -187,7 +188,11 @@ function ensurePipVersion(pipPath, pipVersion, cfg = null, verbose = false, inde
   // not whatever ambient default pip would otherwise use.
   if (indexUrl) cmd.push("--index-url", indexUrl);
   if (verbose) console.log(`  $ ${pipPath} ${cmd.join(" ")}`);
-  const res = spawnSync(pipPath, cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync(pipPath, cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
     console.error(
@@ -278,7 +283,11 @@ export async function testInstallations(pipPath, pkg, indexUrl, versions, output
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync(pipPath, cmd, { encoding: "utf8", env });
+      const res = spawnSync(pipPath, cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

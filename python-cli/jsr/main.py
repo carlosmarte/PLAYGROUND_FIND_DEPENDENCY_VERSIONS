@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -317,6 +318,13 @@ def test_installations(pip_path, package, index_url, versions, output_json,
                 cmd, capture_output=True, text=True, env=env, cwd=pip_path,
             )
             returncode, stdout_text, stderr_text = res.returncode, res.stdout, res.stderr
+            # A negative returncode means the child was killed by a signal, leaving
+            # stderr empty — fall back to the signal name so it isn't blank.
+            if not (stderr_text or "").strip() and returncode is not None and returncode < 0:
+                try:
+                    stderr_text = f"terminated by signal {signal.Signals(-returncode).name}"
+                except ValueError:
+                    stderr_text = f"terminated by signal {-returncode}"
 
         if returncode == 0:
             print(f"  ✅ SUCCESS: {target}")

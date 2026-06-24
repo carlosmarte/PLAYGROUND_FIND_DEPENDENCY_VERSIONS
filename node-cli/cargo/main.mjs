@@ -175,7 +175,11 @@ export function setupVenv(envDir, cargoVersion = DEFAULT_CARGO_VERSION, cfg = nu
     fs.mkdirSync(envDir, { recursive: true });
     const init = spawnSync(
       "cargo", ["init", "--name", "verprobe", "--vcs", "none", envDir],
-      { encoding: "utf8", env: subprocessEnv(cfg) },
+      {
+        encoding: "utf8",
+        env: subprocessEnv(cfg),
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      },
     );
     if (verbose) echo(init.stdout, init.stderr);
     if (init.status !== 0) {
@@ -196,12 +200,21 @@ function ensureCargoVersion(envDir, cargoVersion, cfg = null, verbose = false) {
   console.log(`Ensuring cargo==${cargoVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ cargo ${cmd.join(" ")}`);
-  const res = spawnSync("cargo", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("cargo", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
+    // status is null when the child was killed by a signal — stderr is empty in
+    // that case, so fall back to the signal name / spawn error.
+    const detail = lastLine(res.stderr)
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
     console.error(
-      `Warning: could not confirm cargo==${cargoVersion}: `
-      + `${lastLine(res.stderr) || "unknown error"}`,
+      `Warning: could not confirm cargo==${cargoVersion}: ${detail}`,
     );
   }
 }
@@ -303,9 +316,19 @@ export async function testInstallations(pipPath, pkg, indexUrl, versions, output
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      let res = spawnSync("cargo", addCmd, { encoding: "utf8", env, cwd: pipPath });
+      let res = spawnSync("cargo", addCmd, {
+        encoding: "utf8",
+        env,
+        cwd: pipPath,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       if (res.status === 0) {
-        res = spawnSync("cargo", fetchCmd, { encoding: "utf8", env, cwd: pipPath });
+        res = spawnSync("cargo", fetchCmd, {
+          encoding: "utf8",
+          env,
+          cwd: pipPath,
+          maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+        });
       }
       returncode = res.status;
       stdoutText = res.stdout;

@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -187,9 +188,17 @@ def _ensure_gradle_version(gradle_version, cfg=None, verbose=False):
     if verbose:
         _echo(res.stdout, res.stderr)
     if res.returncode != 0 or gradle_version not in (res.stdout or ""):
+        # A negative returncode means the child was killed by a signal, leaving
+        # stdout/stderr empty — fall back to the signal name so it isn't blank.
+        detail = _last_line(res.stdout) or _last_line(res.stderr)
+        if not detail and res.returncode < 0:
+            try:
+                detail = f"terminated by signal {signal.Signals(-res.returncode).name}"
+            except ValueError:
+                detail = f"terminated by signal {-res.returncode}"
         print(
             f"Warning: could not pin gradle=={gradle_version}: "
-            f"{_last_line(res.stdout) or _last_line(res.stderr) or 'unknown error'}",
+            f"{detail or 'unknown error'}",
             file=sys.stderr,
         )
 
@@ -308,6 +317,13 @@ def test_installations(sandbox, package, index_url, versions, output_json,
         else:
             res = subprocess.run(cmd, capture_output=True, text=True, env=env)
             returncode, stdout_text, stderr_text = res.returncode, res.stdout, res.stderr
+            # A negative returncode means the child was killed by a signal, leaving
+            # stderr empty — fall back to the signal name so it isn't blank.
+            if not (stderr_text or "").strip() and returncode is not None and returncode < 0:
+                try:
+                    stderr_text = f"terminated by signal {signal.Signals(-returncode).name}"
+                except ValueError:
+                    stderr_text = f"terminated by signal {-returncode}"
 
         if returncode == 0:
             print(f"  ✅ SUCCESS: {target}")

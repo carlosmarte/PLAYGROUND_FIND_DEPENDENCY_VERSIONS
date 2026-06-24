@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -112,7 +113,11 @@ def get_available_versions(package, index_url, cfg=None, verbose=False):
     cfg = cfg or resolve_env()
     print(f"Retrieving versions for '{package}' from {index_url}...")
     cmd = [CONDA_BIN, "search", package, "--json"]
-    cmd += conda_options(cfg)
+    # Strip any -v/-vv from CONDA_VERBOSE for this query: we only need the
+    # --json payload, but verbose conda interleaves a flood of solver / fetch
+    # lines — a flood of output that bloats the captured buffer (and overflows
+    # the Node twin's spawnSync limit). Keep the discovery query quiet.
+    cmd += _strip_verbose(conda_options(cfg))
     if index_url:
         cmd += ["-c", index_url, "--override-channels"]
     if verbose:
@@ -125,7 +130,18 @@ def get_available_versions(package, index_url, cfg=None, verbose=False):
     except subprocess.CalledProcessError as e:
         if verbose:
             _echo(e.stdout, e.stderr)
-        print(f"Error running 'conda search': {e.stderr.strip()}", file=sys.stderr)
+        # A negative returncode means the child was killed by a signal, leaving
+        # stderr empty — fall back to the signal name so the failure isn't blank.
+        detail = (e.stderr or "").strip()
+        if not detail and e.returncode is not None and e.returncode < 0:
+            try:
+                detail = f"terminated by signal {signal.Signals(-e.returncode).name}"
+            except ValueError:
+                detail = f"terminated by signal {-e.returncode}"
+        print(
+            f"Error running 'conda search': {detail or 'unknown error'}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if verbose:
@@ -212,6 +228,11 @@ def _echo(*texts):
 def _has_verbose(options):
     """True if conda ``options`` already carry a ``-v``/``-vv`` flag."""
     return any(o.startswith("-v") for o in options)
+
+
+def _strip_verbose(options):
+    """Return ``options`` with any ``-v``/``-vv``/``-vvv`` verbosity flag removed."""
+    return [o for o in options if not re.fullmatch(r"-v+", o)]
 
 
 def _stream(cmd, env):

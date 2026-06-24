@@ -108,18 +108,33 @@ export function subprocessEnv(cfg) {
 export async function getAvailableVersions(pkg, indexUrl, cfg = null, verbose = false) {
   cfg = cfg || resolveEnv();
   console.log(`Retrieving versions for '${pkg}' from ${indexUrl}...`);
-  const cmd = ["pip", "index", "versions", pkg, ...uvOptions(cfg)];
+  // Strip any `-v`/`-vv` from the discovery query: we only need the single
+  // "Available versions:" line, but verbose uv emits a flood of resolver
+  // output — enough to overflow spawnSync's default 1MB buffer, which kills the
+  // child (status=null) and yields an empty stderr.
+  const cmd = ["pip", "index", "versions", pkg, ...stripVerbose(uvOptions(cfg))];
   if (indexUrl) cmd.push("--index-url", indexUrl);
   if (verbose) console.log(`  $ uv ${cmd.join(" ")}`);
 
-  const res = spawnSync("uv", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("uv", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (res.error && res.error.code === "ENOENT") {
     if (verbose) console.log("  uv not found on PATH; falling back to PyPI JSON API.");
     return versionsFromPypi(pkg, cfg, verbose);
   }
   if (res.status !== 0) {
     if (verbose) echo(res.stdout, res.stderr);
-    console.error(`'uv pip index versions' failed: ${(res.stderr || "").trim()}; ` +
+    // status is null when the child was killed by a signal (e.g. spawnSync
+    // SIGTERM on buffer overflow) — stderr is empty in that case, so fall back
+    // to the signal name / spawn error so the failure isn't reported blank.
+    const detail = (res.stderr || "").trim()
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
+    console.error(`'uv pip index versions' failed: ${detail}; ` +
       "falling back to PyPI JSON API.");
     return versionsFromPypi(pkg, cfg, verbose);
   }
@@ -197,7 +212,11 @@ export function setupVenv(envDir, uvVersion = DEFAULT_UV_VERSION, cfg = null, ve
     console.log(`Creating uv virtual environment at: ${envDir}`);
     const cmd = ["venv", envDir, ...uvOptions(cfg)];
     if (verbose) console.log(`  $ uv ${cmd.join(" ")}`);
-    const res = spawnSync("uv", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+    const res = spawnSync("uv", cmd, {
+      encoding: "utf8",
+      env: subprocessEnv(cfg),
+      maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+    });
     if (verbose) echo(res.stdout, res.stderr);
     if (res.status !== 0) {
       console.error(
@@ -223,7 +242,11 @@ function ensureUvVersion(uvVersion, cfg = null, verbose = false) {
   console.log(`Ensuring uv==${uvVersion} for the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ uv ${cmd.join(" ")}`);
-  const res = spawnSync("uv", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("uv", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
     console.error(
@@ -248,6 +271,11 @@ function echo(...texts) {
 /** True if uv `options` already carry a `-v`/`-vv` flag. */
 function hasVerbose(options) {
   return options.some((o) => o.startsWith("-v"));
+}
+
+/** uv `options` with any `-v`/`-vv`/`-vvv` verbosity flag removed. */
+function stripVerbose(options) {
+  return options.filter((o) => !/^-v+$/.test(o));
 }
 
 /**
@@ -311,7 +339,11 @@ export async function testInstallations(pyPath, pkg, indexUrl, versions, outputJ
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("uv", cmd, { encoding: "utf8", env });
+      const res = spawnSync("uv", cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

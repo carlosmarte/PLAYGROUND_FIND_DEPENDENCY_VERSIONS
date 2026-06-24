@@ -110,16 +110,31 @@ export function subprocessEnv(cfg) {
 export function getAvailableVersions(pkg, indexUrl, cfg = null, verbose = false) {
   cfg = cfg || resolveEnv();
   console.log(`Retrieving versions for '${pkg}' from ${indexUrl}...`);
+  // Strip go's verbose flag (`-x`, not `-v`) for this query: we only need the
+  // single line of space-separated versions, but `-x` makes go print every
+  // command it runs — enough output to overflow spawnSync's default 1MB buffer,
+  // which kills the child (status=null) and yields an empty stderr.
   const cmd = ["list", "-m", "-versions", pkg];
-  cmd.push(...goOptions(cfg));
+  cmd.push(...stripVerbose(goOptions(cfg)));
   const env = subprocessEnv(cfg);
   if (indexUrl) env.GOPROXY = indexUrl; // -versions reads the proxy from GOPROXY
   if (verbose) console.log(`  $ GOPROXY=${env.GOPROXY} go ${cmd.join(" ")}`);
 
-  const res = spawnSync("go", cmd, { encoding: "utf8", env });
+  const res = spawnSync("go", cmd, {
+    encoding: "utf8",
+    env,
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (res.status !== 0) {
     if (verbose) echo(res.stdout, res.stderr);
-    console.error(`Error running 'go list -m -versions': ${(res.stderr || "").trim()}`);
+    // status is null when the child was killed by a signal (e.g. spawnSync
+    // SIGTERM on buffer overflow) — stderr is empty in that case, so fall back
+    // to the signal name / spawn error so the failure isn't reported blank.
+    const detail = (res.stderr || "").trim()
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
+    console.error(`Error running 'go list -m -versions': ${detail}`);
     process.exit(1);
   }
 
@@ -154,7 +169,10 @@ export function setupVenv(envDir, goVersion = DEFAULT_GO_VERSION, cfg = null, ve
     console.log(`Creating throwaway module at: ${envDir}`);
     fs.mkdirSync(envDir, { recursive: true });
     const init = spawnSync("go", ["mod", "init", "tmp"], {
-      encoding: "utf8", env: subprocessEnv(cfg), cwd: envDir,
+      encoding: "utf8",
+      env: subprocessEnv(cfg),
+      cwd: envDir,
+      maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
     });
     if (verbose) echo(init.stdout, init.stderr);
     if (init.status !== 0) {
@@ -174,7 +192,11 @@ function ensurePipVersion(envDir, goVersion, cfg = null, verbose = false) {
   console.log(`Ensuring go==${goVersion} in the test environment...`);
   const cmd = ["version"];
   if (verbose) console.log(`  $ go ${cmd.join(" ")}`);
-  const res = spawnSync("go", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("go", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
     console.error(
@@ -199,6 +221,11 @@ function echo(...texts) {
 /** True if go `options` already carry a `-x`/`-v` flag. */
 function hasVerbose(options) {
   return options.some((o) => o === "-x" || o === "-v");
+}
+
+/** go `options` with go's verbose flag (`-x`) removed. */
+function stripVerbose(options) {
+  return options.filter((o) => o !== "-x");
 }
 
 /**
@@ -260,7 +287,12 @@ export async function testInstallations(pipPath, pkg, indexUrl, versions, output
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("go", cmd, { encoding: "utf8", env, cwd: pipPath });
+      const res = spawnSync("go", cmd, {
+        encoding: "utf8",
+        env,
+        cwd: pipPath,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

@@ -183,16 +183,25 @@ function ensureMavenVersion(mavenVersion, cfg = null, verbose = false) {
   console.log(`Ensuring maven==${mavenVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ mvn ${cmd.join(" ")}`);
-  const res = spawnSync("mvn", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("mvn", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (res.error && res.error.code === "ENOENT") {
     console.error(`Warning: could not pin maven==${mavenVersion}: mvn not found on PATH`);
     return;
   }
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0 || !(res.stdout || "").includes(mavenVersion)) {
+    // status is null when the child was killed by a signal — output is empty in
+    // that case, so fall back to the signal name / spawn error rather than blank.
+    const detail = lastLine(res.stdout) || lastLine(res.stderr)
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
     console.error(
-      `Warning: could not pin maven==${mavenVersion}: ` +
-      `${lastLine(res.stdout) || lastLine(res.stderr) || "unknown error"}`,
+      `Warning: could not pin maven==${mavenVersion}: ${detail}`,
     );
   }
 }
@@ -278,7 +287,11 @@ export async function testInstallations(repoLocal, pkg, indexUrl, versions, outp
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("mvn", cmd, { encoding: "utf8", env });
+      const res = spawnSync("mvn", cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

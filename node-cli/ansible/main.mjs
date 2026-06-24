@@ -166,16 +166,28 @@ export async function getAvailableVersions(pkg, galaxyServer, cfg = null, verbos
 /** Fallback discovery via `ansible-galaxy collection list` (installed only). */
 function versionsViaCli(pkg, cfg = null, verbose = false) {
   cfg = cfg || resolveEnv();
+  // Strip any `-v`/`-vv` from the discovery query: we only parse the JSON
+  // version list, but verbose ansible-galaxy floods diagnostics — enough output
+  // to overflow spawnSync's default 1MB buffer, which kills the child
+  // (status=null) and yields an empty stderr.
   let cmd = ["collection", "list", pkg, "--format", "json"];
-  cmd = cmd.concat(galaxyOptions(cfg));
+  cmd = cmd.concat(stripVerbose(galaxyOptions(cfg)));
   if (verbose) console.log(`  $ ansible-galaxy ${cmd.join(" ")}`);
   const res = spawnSync("ansible-galaxy", cmd, {
-    encoding: "utf8", env: subprocessEnv(cfg),
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
   });
   if (res.error || res.status !== 0) {
-    const stderr = res.error ? String(res.error) : res.stderr || "";
-    if (verbose) echo(res.stdout || "", stderr);
-    console.error(`Error running 'ansible-galaxy collection list': ${stderr.trim()}`);
+    if (verbose) echo(res.stdout || "", res.stderr || "");
+    // status is null when the child was killed by a signal (e.g. spawnSync
+    // SIGTERM on buffer overflow) — stderr is empty in that case, so fall back
+    // to the signal name / spawn error so the failure isn't reported blank.
+    const detail = (res.stderr || "").trim()
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
+    console.error(`Error running 'ansible-galaxy collection list': ${detail}`);
     return [];
   }
   if (verbose) echo(res.stdout);
@@ -227,7 +239,11 @@ function ensureAnsibleVersion(ansibleVersion, cfg = null, verbose = false) {
   console.log(`Ensuring ansible==${ansibleVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ ansible-galaxy ${cmd.join(" ")}`);
-  const res = spawnSync("ansible-galaxy", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("ansible-galaxy", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (res.error && res.error.code === "ENOENT") {
     console.error("Warning: ansible-galaxy not found on PATH.");
     return;
@@ -257,6 +273,11 @@ function echo(...texts) {
 /** True if ansible-galaxy `options` already carry a `-v`/`-vv` flag. */
 function hasVerbose(options) {
   return options.some((o) => o.startsWith("-v"));
+}
+
+/** ansible-galaxy `options` with any `-v`/`-vv`/`-vvv` verbosity flag removed. */
+function stripVerbose(options) {
+  return options.filter((o) => !/^-v+$/.test(o));
 }
 
 /**
@@ -320,7 +341,11 @@ export async function testInstallations(installPath, pkg, galaxyServer, versions
         returncode = code;
         stdoutText = stderrText = output; // streamed combined; same text both ways
       } else {
-        const res = spawnSync("ansible-galaxy", cmd, { encoding: "utf8", env });
+        const res = spawnSync("ansible-galaxy", cmd, {
+          encoding: "utf8",
+          env,
+          maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+        });
         returncode = res.status;
         stdoutText = res.stdout;
         stderrText = res.stderr;

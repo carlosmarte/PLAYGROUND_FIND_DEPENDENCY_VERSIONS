@@ -189,11 +189,21 @@ function ensureStackVersion(stackVersion, cfg = null, verbose = false) {
   console.log(`Ensuring stack==${stackVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ stack ${cmd.join(" ")}`);
-  const res = spawnSync("stack", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("stack", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
+    // status is null when the child was killed by a signal (stderr empty in that
+    // case) — fall back to the signal name so the warning isn't reported blank.
+    const detail = lastLine(res.stderr)
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "stack not found";
     console.error(
-      `Warning: could not verify stack==${stackVersion}: ${lastLine(res.stderr) || "stack not found"}`,
+      `Warning: could not verify stack==${stackVersion}: ${detail}`,
     );
   }
 }
@@ -301,7 +311,12 @@ export async function testInstallations(envDir, pkg, indexUrl, versions, outputJ
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("stack", cmd, { encoding: "utf8", env, cwd: projectDir });
+      const res = spawnSync("stack", cmd, {
+        encoding: "utf8",
+        env,
+        cwd: projectDir,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

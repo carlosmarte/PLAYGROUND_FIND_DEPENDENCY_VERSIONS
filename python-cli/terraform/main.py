@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -182,9 +183,17 @@ def _ensure_terraform_version(sandbox_path, terraform_version, cfg=None, verbose
     except json.JSONDecodeError:
         found = ""
     if res.returncode != 0 or found != terraform_version:
+        # A negative returncode means the child was killed by a signal — there is
+        # no version string in that case, so surface the signal name instead.
+        detail = found
+        if not detail and res.returncode < 0:
+            try:
+                detail = f"terminated by signal {signal.Signals(-res.returncode).name}"
+            except ValueError:
+                detail = f"terminated by signal {-res.returncode}"
         print(
             f"Warning: could not pin terraform=={terraform_version}: "
-            f"binary reports {found or 'unknown error'}",
+            f"binary reports {detail or 'unknown error'}",
             file=sys.stderr,
         )
 
@@ -287,6 +296,13 @@ def test_installations(sandbox_path, package, index_url, versions, output_json,
         else:
             res = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=work_dir)
             returncode, stdout_text, stderr_text = res.returncode, res.stdout, res.stderr
+            # A negative returncode means the child was killed by a signal, leaving
+            # stderr empty — fall back to the signal name so it isn't blank.
+            if not (stderr_text or "").strip() and returncode is not None and returncode < 0:
+                try:
+                    stderr_text = f"terminated by signal {signal.Signals(-returncode).name}"
+                except ValueError:
+                    stderr_text = f"terminated by signal {-returncode}"
 
         if returncode == 0:
             print(f"  ✅ SUCCESS: {target}")

@@ -213,11 +213,21 @@ function ensureTwineVersion(twineVersion, cfg = null, verbose = false) {
   console.log(`Ensuring twine==${twineVersion} for the metadata probe...`);
   const cmd = ["-m", "twine", "--version"];
   if (verbose) console.log(`  $ ${PYTHON} ${cmd.join(" ")}`);
-  const res = spawnSync(PYTHON, cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync(PYTHON, cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
+    // status is null when the child was killed by a signal (stderr empty in that
+    // case) — fall back to the signal name so the warning isn't reported blank.
+    const detail = lastLine(res.stderr)
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
     console.error(
-      `Warning: could not verify twine==${twineVersion}: ${lastLine(res.stderr) || "unknown error"}`,
+      `Warning: could not verify twine==${twineVersion}: ${detail}`,
     );
   }
 }
@@ -306,7 +316,11 @@ export async function testInstallations(scratchDir, pkg, indexUrl, versions, out
       dlRc = code;
       dlStdout = dlStderr = output;
     } else {
-      const dlRes = spawnSync(PYTHON, dlCmd, { encoding: "utf8", env });
+      const dlRes = spawnSync(PYTHON, dlCmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       dlRc = dlRes.status;
       dlStdout = dlRes.stdout;
       dlStderr = dlRes.stderr;
@@ -332,7 +346,11 @@ export async function testInstallations(scratchDir, pkg, indexUrl, versions, out
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync(PYTHON, checkCmd, { encoding: "utf8", env });
+      const res = spawnSync(PYTHON, checkCmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

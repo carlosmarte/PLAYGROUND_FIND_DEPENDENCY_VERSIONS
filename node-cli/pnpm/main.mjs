@@ -107,17 +107,29 @@ export function subprocessEnv(cfg) {
 export function getAvailableVersions(pkg, indexUrl, cfg = null, verbose = false) {
   cfg = cfg || resolveEnv();
   console.log(`Retrieving versions for '${pkg}' from ${indexUrl}...`);
-  const cmd = ["view", pkg, "versions", "--json", ...pnpmOptions(cfg)];
+  // Strip any verbose `--loglevel` for this query: we only parse a tiny JSON
+  // blob, but a chatty loglevel (verbose/silly/debug) emits a flood of output
+  // — enough to overflow spawnSync's default 1MB buffer, which kills the child
+  // (status=null) and yields an empty stderr.
+  const cmd = ["view", pkg, "versions", "--json", ...stripVerbose(pnpmOptions(cfg))];
   if (indexUrl) cmd.push("--registry", indexUrl);
   if (verbose) console.log(`  $ pnpm ${cmd.join(" ")}`);
 
   const res = spawnSync("pnpm", cmd, {
     encoding: "utf8",
     env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
   });
   if (res.status !== 0) {
     if (verbose) echo(res.stdout, res.stderr);
-    console.error(`Error running 'pnpm view': ${(res.stderr || "").trim()}`);
+    // status is null when the child was killed by a signal (e.g. spawnSync
+    // SIGTERM on buffer overflow) — stderr is empty in that case, so fall back
+    // to the signal name / spawn error so the failure isn't reported blank.
+    const detail = (res.stderr || "").trim()
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
+    console.error(`Error running 'pnpm view': ${detail}`);
     process.exit(1);
   }
 
@@ -212,6 +224,30 @@ function hasVerbose(options) {
   return false;
 }
 
+// pnpm loglevels that flood stdout/stderr — these are the ones worth stripping
+// from a discovery query whose output we parse as a tiny JSON blob.
+const VERBOSE_LOGLEVELS = ["verbose", "silly", "info", "http", "debug"];
+
+/**
+ * pnpm `options` with any verbose `--loglevel <level>` pair removed.
+ *
+ * `pnpmOptions` emits `--loglevel <NPM_CONFIG_LOGLEVEL>`; if that level is a
+ * chatty one (verbose/silly/debug/...) it can flood spawnSync's 1MB buffer on
+ * the discovery query, killing the child. Drop the flag+value pair for that
+ * case; quiet levels (warn/error) are left untouched.
+ */
+function stripVerbose(options) {
+  const out = [];
+  for (let i = 0; i < options.length; i++) {
+    if (options[i] === "--loglevel" && VERBOSE_LOGLEVELS.includes(options[i + 1])) {
+      i++; // skip the value too
+      continue;
+    }
+    out.push(options[i]);
+  }
+  return out;
+}
+
 /**
  * Run `pnpm <cmd>`, echoing combined output live while capturing it.
  *
@@ -272,7 +308,12 @@ export async function testInstallations(pipPath, pkg, indexUrl, versions, output
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("pnpm", cmd, { encoding: "utf8", env, cwd: pipPath });
+      const res = spawnSync("pnpm", cmd, {
+        encoding: "utf8",
+        env,
+        cwd: pipPath,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

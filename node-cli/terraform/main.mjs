@@ -176,7 +176,11 @@ function ensureTerraformVersion(sandboxPath, terraformVersion, cfg = null, verbo
   console.log(`Ensuring terraform==${terraformVersion} in the test environment...`);
   const cmd = ["version", "-json"];
   if (verbose) console.log(`  $ terraform ${cmd.join(" ")}`);
-  const res = spawnSync("terraform", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("terraform", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   let found = "";
   try {
@@ -185,8 +189,14 @@ function ensureTerraformVersion(sandboxPath, terraformVersion, cfg = null, verbo
     found = "";
   }
   if (res.status !== 0 || found !== terraformVersion) {
+    // status is null when the child was killed by a signal — there is no version
+    // string in that case, so surface the signal name / spawn error instead.
+    const detail = found
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
     console.error(
-      `Warning: could not pin terraform==${terraformVersion}: binary reports ${found || "unknown error"}`,
+      `Warning: could not pin terraform==${terraformVersion}: binary reports ${detail}`,
     );
   }
 }
@@ -294,10 +304,19 @@ export async function testInstallations(sandboxPath, pkg, indexUrl, versions, ou
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("terraform", cmd, { encoding: "utf8", env, cwd: workDir });
+      const res = spawnSync("terraform", cmd, {
+        encoding: "utf8",
+        env,
+        cwd: workDir,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
-      stderrText = res.stderr;
+      // status is null when the child was killed by a signal — stderr is empty
+      // in that case, so fall back to the signal name so the error isn't blank.
+      stderrText = res.stderr
+        || (res.status === null && res.signal && `terminated by signal ${res.signal}`)
+        || res.stderr;
     }
 
     if (returncode === 0) {

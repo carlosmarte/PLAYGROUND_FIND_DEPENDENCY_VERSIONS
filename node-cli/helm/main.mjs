@@ -118,12 +118,20 @@ function splitChart(pkg) {
 function repoAdd(alias, repoUrl, cfg, verbose = false) {
   const cmd = ["repo", "add", alias, repoUrl, ...helmOptions(cfg)];
   if (verbose) console.log(`  $ helm ${cmd.join(" ")}`);
-  const res = spawnSync("helm", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("helm", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   // Refresh the index so search sees the latest versions.
   const upd = ["repo", "update", alias, ...helmOptions(cfg)];
   if (verbose) console.log(`  $ helm ${upd.join(" ")}`);
-  spawnSync("helm", upd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  spawnSync("helm", upd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
 }
 
 /**
@@ -139,14 +147,29 @@ export function getAvailableVersions(pkg, indexUrl, cfg = null, verbose = false)
   const [alias, chart] = splitChart(pkg);
   if (indexUrl) repoAdd(alias, indexUrl, cfg, verbose);
 
+  // Strip `--debug` from the discovery query: we only need the small JSON
+  // version list, but verbose helm floods debug output that can overflow
+  // spawnSync's default 1MB buffer, killing the child (status=null) with an
+  // empty stderr.
   const cmd = ["search", "repo", `${alias}/${chart}`, "--versions", "--output", "json"];
-  cmd.push(...helmOptions(cfg));
+  cmd.push(...stripVerbose(helmOptions(cfg)));
   if (verbose) console.log(`  $ helm ${cmd.join(" ")}`);
 
-  const res = spawnSync("helm", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("helm", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (res.status !== 0) {
     if (verbose) echo(res.stdout, res.stderr);
-    console.error(`Error running 'helm search repo': ${(res.stderr || "").trim()}`);
+    // status is null when the child was killed by a signal (e.g. spawnSync
+    // SIGTERM on buffer overflow) — stderr is empty in that case, so fall back
+    // to the signal name / spawn error so the failure isn't reported blank.
+    const detail = (res.stderr || "").trim()
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
+    console.error(`Error running 'helm search repo': ${detail}`);
     process.exit(1);
   }
 
@@ -192,7 +215,11 @@ function ensureHelmVersion(destPath, helmVersion, cfg = null, verbose = false) {
   console.log(`Ensuring helm==${helmVersion} in the test environment...`);
   const cmd = ["version", "--template", "{{.Version}}", ...helmOptions(cfg)];
   if (verbose) console.log(`  $ helm ${cmd.join(" ")}`);
-  const res = spawnSync("helm", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("helm", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   const found = lastLine(res.stdout).replace(/^v/, "");
   if (res.status !== 0 || found !== helmVersion) {
@@ -218,6 +245,11 @@ function echo(...texts) {
 /** True if helm `options` already carry a `--debug` flag. */
 function hasVerbose(options) {
   return options.some((o) => o === "--debug");
+}
+
+/** helm `options` with the `--debug` verbosity flag removed. */
+function stripVerbose(options) {
+  return options.filter((o) => o !== "--debug");
 }
 
 /**
@@ -288,7 +320,11 @@ export async function testInstallations(destPath, pkg, indexUrl, versions, outpu
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("helm", cmd, { encoding: "utf8", env });
+      const res = spawnSync("helm", cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

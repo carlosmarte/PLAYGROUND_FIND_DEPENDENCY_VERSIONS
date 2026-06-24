@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -186,9 +187,17 @@ def _ensure_maven_version(maven_version, cfg=None, verbose=False):
     if verbose:
         _echo(res.stdout, res.stderr)
     if res.returncode != 0 or maven_version not in (res.stdout or ""):
+        # A negative returncode means the child was killed by a signal, leaving
+        # output empty — fall back to the signal name so the failure isn't blank.
+        detail = _last_line(res.stdout) or _last_line(res.stderr)
+        if not detail and res.returncode is not None and res.returncode < 0:
+            try:
+                detail = f"terminated by signal {signal.Signals(-res.returncode).name}"
+            except ValueError:
+                detail = f"terminated by signal {-res.returncode}"
         print(
             f"Warning: could not pin maven=={maven_version}: "
-            f"{_last_line(res.stdout) or _last_line(res.stderr) or 'unknown error'}",
+            f"{detail or 'unknown error'}",
             file=sys.stderr,
         )
 

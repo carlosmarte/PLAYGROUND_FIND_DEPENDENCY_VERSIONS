@@ -181,13 +181,27 @@ export async function getAvailableVersions(pkg, indexUrl, cfg = null, verbose = 
 /** Fallback discovery: parse `mix hex.info <pkg>` 'Releases:' line. */
 function versionsViaMix(pkg, cfg = null, verbose = false) {
   cfg = cfg || resolveEnv();
-  const cmd = ["hex.info", pkg, ...hexOptions(cfg)];
+  // Strip `--debug` from the discovery query: we only parse the 'Releases:'
+  // line, but verbose mix floods diagnostics — enough output to overflow
+  // spawnSync's default 1MB buffer, which kills the child (status=null) and
+  // yields an empty stderr.
+  const cmd = ["hex.info", pkg, ...stripVerbose(hexOptions(cfg))];
   if (verbose) console.log(`  $ mix ${cmd.join(" ")}`);
-  const res = spawnSync("mix", cmd, { encoding: "utf8", env: hexEnv(cfg) });
+  const res = spawnSync("mix", cmd, {
+    encoding: "utf8",
+    env: hexEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (res.error || res.status !== 0) {
-    const stderr = res.error ? String(res.error) : (res.stderr || "");
-    if (verbose) echo(res.stdout || "", stderr);
-    console.error(`Error running 'mix hex.info': ${stderr.trim()}`);
+    if (verbose) echo(res.stdout || "", res.stderr || "");
+    // status is null when the child was killed by a signal (e.g. spawnSync
+    // SIGTERM on buffer overflow) — stderr is empty in that case, so fall back
+    // to the signal name / spawn error so the failure isn't reported blank.
+    const detail = (res.stderr || "").trim()
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
+    console.error(`Error running 'mix hex.info': ${detail}`);
     return [];
   }
   if (verbose) echo(res.stdout);
@@ -226,7 +240,11 @@ function ensureHexVersion(hexVersion, cfg = null, verbose = false) {
   console.log(`Ensuring hex==${hexVersion} in the test environment...`);
   const cmd = ["hex.info"];
   if (verbose) console.log(`  $ mix ${cmd.join(" ")}`);
-  const res = spawnSync("mix", cmd, { encoding: "utf8", env: hexEnv(cfg) });
+  const res = spawnSync("mix", cmd, {
+    encoding: "utf8",
+    env: hexEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.error || res.status !== 0) {
     console.error(
@@ -252,6 +270,11 @@ function echo(...texts) {
 /** True if mix `options` already carry a `--debug` flag. */
 function hasVerbose(options) {
   return options.some((o) => o.startsWith("--debug"));
+}
+
+/** mix `options` with the `--debug` verbosity flag removed. */
+function stripVerbose(options) {
+  return options.filter((o) => o !== "--debug");
 }
 
 /**
@@ -322,7 +345,11 @@ export async function testInstallations(envDir, pkg, indexUrl, versions, outputJ
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("mix", cmd, { encoding: "utf8", env });
+      const res = spawnSync("mix", cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

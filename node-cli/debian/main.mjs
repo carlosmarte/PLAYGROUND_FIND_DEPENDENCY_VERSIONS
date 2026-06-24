@@ -118,17 +118,32 @@ export function subprocessEnv(cfg) {
 export function getAvailableVersions(pkg, indexUrl, cfg = null, verbose = false) {
   cfg = cfg || resolveEnv();
   console.log(`Retrieving versions for '${pkg}' from ${indexUrl}...`);
-  const cmd = ["madison", pkg, ...aptOptions(cfg)];
+  // Strip apt's verbose toggle (`-o Debug::pkgAcquire=true`) for this query: we
+  // only parse the pipe-separated madison rows, but Debug::pkgAcquire makes apt
+  // emit a line per acquired URL — enough output to overflow spawnSync's default
+  // 1MB buffer, which kills the child (status=null) and yields an empty stderr.
+  const cmd = ["madison", pkg, ...stripDebug(aptOptions(cfg))];
   if (verbose) console.log(`  $ apt-cache ${cmd.join(" ")}`);
 
-  const res = spawnSync("apt-cache", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("apt-cache", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (res.error && res.error.code === "ENOENT") {
     console.error("Error: 'apt-cache' not found on PATH (run inside Debian/Ubuntu).");
     process.exit(1);
   }
   if (res.status !== 0) {
     if (verbose) echo(res.stdout, res.stderr);
-    console.error(`Error running 'apt-cache madison': ${(res.stderr || "").trim()}`);
+    // status is null when the child was killed by a signal (e.g. spawnSync
+    // SIGTERM on buffer overflow) — stderr is empty in that case, so fall back
+    // to the signal name / spawn error so the failure isn't reported blank.
+    const detail = (res.stderr || "").trim()
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
+    console.error(`Error running 'apt-cache madison': ${detail}`);
     process.exit(1);
   }
 
@@ -180,7 +195,11 @@ function ensureAptVersion(aptVersion, cfg = null, verbose = false) {
   console.log(`Ensuring apt==${aptVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ apt-get ${cmd.join(" ")}`);
-  const res = spawnSync("apt-get", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("apt-get", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   const have = res.stdout ? (res.stdout.split(/\r?\n/)[0] || "") : "";
   if (res.status !== 0) {
@@ -212,6 +231,26 @@ function echo(...texts) {
 /** True if apt `options` already carry a Debug `-o` flag. */
 function hasVerbose(options) {
   return options.some((o) => o.includes("Debug"));
+}
+
+/**
+ * apt `options` with the verbose Debug toggle removed.
+ *
+ * apt's verbosity is a two-token `-o Debug::pkgAcquire=true` pair (not `-v`),
+ * so drop any `Debug::*` value AND the bare `-o` flag that introduces it,
+ * leaving the rest of the option list (timeouts, retries) intact.
+ */
+function stripDebug(options) {
+  const out = [];
+  for (let i = 0; i < options.length; i++) {
+    if (options[i] === "-o" && i + 1 < options.length && options[i + 1].includes("Debug")) {
+      i++; // skip both the "-o" and its "Debug::..." value
+      continue;
+    }
+    if (options[i].includes("Debug")) continue; // stray Debug value with no -o
+    out.push(options[i]);
+  }
+  return out;
 }
 
 /**
@@ -283,7 +322,11 @@ export async function testInstallations(cachePath, pkg, indexUrl, versions, outp
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("apt-get", cmd, { encoding: "utf8", env });
+      const res = spawnSync("apt-get", cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

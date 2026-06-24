@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -154,7 +155,11 @@ def _versions_via_cli(package, cfg=None, verbose=False):
     """Fallback discovery via ``ansible-galaxy collection list`` (installed only)."""
     cfg = cfg or resolve_env()
     cmd = ["ansible-galaxy", "collection", "list", package, "--format", "json"]
-    cmd += galaxy_options(cfg)
+    # Strip any -v/-vv from the discovery query: we only parse the JSON version
+    # list, but verbose ansible-galaxy floods diagnostics — a flood of output
+    # that bloats the captured buffer (and overflows the Node twin's spawnSync
+    # limit). Keep the discovery query quiet.
+    cmd += _strip_verbose(galaxy_options(cfg))
     if verbose:
         print(f"  $ {' '.join(cmd)}")
     try:
@@ -162,10 +167,20 @@ def _versions_via_cli(package, cfg=None, verbose=False):
             cmd, capture_output=True, text=True, check=True, env=subprocess_env(cfg)
         )
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        stderr = getattr(e, "stderr", "") or str(e)
         if verbose:
-            _echo(getattr(e, "stdout", ""), stderr)
-        print(f"Error running 'ansible-galaxy collection list': {stderr.strip()}",
+            _echo(getattr(e, "stdout", ""), getattr(e, "stderr", "") or str(e))
+        # A negative returncode means the child was killed by a signal, leaving
+        # stderr empty — fall back to the signal name so the failure isn't blank.
+        detail = (getattr(e, "stderr", "") or "").strip()
+        returncode = getattr(e, "returncode", None)
+        if not detail and returncode is not None and returncode < 0:
+            try:
+                detail = f"terminated by signal {signal.Signals(-returncode).name}"
+            except ValueError:
+                detail = f"terminated by signal {-returncode}"
+        if not detail:
+            detail = str(e)
+        print(f"Error running 'ansible-galaxy collection list': {detail}",
               file=sys.stderr)
         return []
     if verbose:
@@ -243,6 +258,11 @@ def _echo(*texts):
 def _has_verbose(options):
     """True if ansible-galaxy ``options`` already carry a ``-v``/``-vv`` flag."""
     return any(o.startswith("-v") for o in options)
+
+
+def _strip_verbose(options):
+    """Return ``options`` with any ``-v``/``-vv``/``-vvv`` verbosity flag removed."""
+    return [o for o in options if not re.fullmatch(r"-v+", o)]
 
 
 def _stream(cmd, env):

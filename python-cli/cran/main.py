@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -190,9 +191,11 @@ def _ensure_r_version(lib_path, r_version, cfg=None, verbose=False):
     if verbose:
         _echo(res.stdout, res.stderr)
     if res.returncode != 0:
+        # A negative returncode means the child was killed by a signal, leaving
+        # stderr empty — fall back to the signal name so the warning isn't blank.
+        detail = _last_line(res.stderr) or _signal_detail(res.returncode) or "unknown error"
         print(
-            f"Warning: could not confirm R=={r_version}: "
-            f"{_last_line(res.stderr) or 'unknown error'}",
+            f"Warning: could not confirm R=={r_version}: {detail}",
             file=sys.stderr,
         )
 
@@ -201,6 +204,20 @@ def _last_line(text):
     """Return the last non-empty line of ``text`` (for compact logging)."""
     lines = [ln for ln in (text or "").strip().splitlines() if ln.strip()]
     return lines[-1] if lines else ""
+
+
+def _signal_detail(returncode):
+    """Describe a signal-kill (negative ``returncode``) as ``terminated by signal <name>``.
+
+    Returns an empty string when ``returncode`` is not a signal kill, so callers
+    can chain it after their stderr-derived detail.
+    """
+    if returncode is None or returncode >= 0:
+        return ""
+    try:
+        return f"terminated by signal {signal.Signals(-returncode).name}"
+    except ValueError:
+        return f"terminated by signal {-returncode}"
 
 
 def _echo(*texts):
@@ -288,10 +305,14 @@ def test_installations(lib_path, package, index_url, versions, output_json,
             installable.append(version)
         else:
             print(f"  ❌ FAILED: {target}")
+            # A negative returncode means the child was killed by a signal,
+            # leaving stderr empty — fall back to the signal name so the failure
+            # isn't recorded blank.
+            error = _last_line(stderr_text) or _signal_detail(returncode) or "Unknown error"
             results.append({
                 "version": version,
                 "status": "failed",
-                "error": _last_line(stderr_text) or "Unknown error",
+                "error": error,
             })
 
         # Persist after every iteration so partial results survive a crash.

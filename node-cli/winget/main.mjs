@@ -130,12 +130,21 @@ export function getAvailableVersions(pkg, indexUrl, cfg = null, verbose = false)
   if (indexUrl) cmd.push("--source", indexUrl);
   if (verbose) console.log(`  $ winget ${cmd.join(" ")}`);
 
-  const res = spawnSync("winget", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("winget", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
-    console.error(
-      `Error querying winget: ${lastLine(res.stderr) || lastLine(res.stdout) || "unknown error"}`,
-    );
+    // status is null when the child was killed by a signal (e.g. spawnSync
+    // SIGTERM on buffer overflow) — output is empty in that case, so fall back
+    // to the signal name / spawn error so the failure isn't reported blank.
+    const detail = lastLine(res.stderr) || lastLine(res.stdout)
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
+    console.error(`Error querying winget: ${detail}`);
     process.exit(1);
   }
 
@@ -186,7 +195,11 @@ function ensureWingetVersion(envDir, wingetVersion, cfg = null, verbose = false)
   console.log(`Ensuring winget>=${wingetVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ winget ${cmd.join(" ")}`);
-  const res = spawnSync("winget", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("winget", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
     console.error(
@@ -280,7 +293,11 @@ export async function testInstallations(venvDir, pkg, indexUrl, versions, output
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("winget", cmd, { encoding: "utf8", env });
+      const res = spawnSync("winget", cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

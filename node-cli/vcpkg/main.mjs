@@ -182,14 +182,25 @@ function ensureVcpkgVersion(sandboxPath, vcpkgVersion, cfg = null, verbose = fal
   console.log(`Ensuring vcpkg==${vcpkgVersion} in the test environment...`);
   const cmd = ["version"];
   if (verbose) console.log(`  $ vcpkg ${cmd.join(" ")}`);
-  const res = spawnSync("vcpkg", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("vcpkg", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   // vcpkg prints a banner line like "vcpkg package management program version 2024-10-18-..."
   const match = (res.stdout || "").match(/version\s+([0-9][\w.\-]*)/);
   const found = match ? match[1] : "";
   if (res.status !== 0 || !found.startsWith(vcpkgVersion)) {
+    // status is null when the child was killed by a signal (e.g. buffer
+    // overflow SIGTERM) — no banner is printed then, so surface the signal
+    // name / spawn error rather than a misleading "unknown error".
+    const detail = found
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
     console.error(
-      `Warning: could not pin vcpkg==${vcpkgVersion}: tool reports ${found || "unknown error"}`,
+      `Warning: could not pin vcpkg==${vcpkgVersion}: tool reports ${detail}`,
     );
   }
 }
@@ -264,17 +275,24 @@ export async function testInstallations(sandboxPath, pkg, indexUrl, versions, ou
     // Bump vcpkg's own verbosity if the user wants detail and nothing set it.
     if (verbose && !hasVerbose(options)) cmd.push("--debug");
 
-    let returncode, stdoutText, stderrText;
+    let returncode, stdoutText, stderrText, signal = null, spawnError = null;
     if (verbose) {
       console.log(`  $ vcpkg ${cmd.join(" ")}  (cwd=${sandboxPath})`);
       const [code, output] = await stream(cmd, env, sandboxPath);
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("vcpkg", cmd, { encoding: "utf8", env, cwd: sandboxPath });
+      const res = spawnSync("vcpkg", cmd, {
+        encoding: "utf8",
+        env,
+        cwd: sandboxPath,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;
+      signal = res.signal; // set when status is null (child killed by signal)
+      spawnError = res.error;
     }
 
     if (returncode === 0) {
@@ -283,7 +301,14 @@ export async function testInstallations(sandboxPath, pkg, indexUrl, versions, ou
       installable.push(version);
     } else {
       console.log(`  ❌ FAILED: ${target}`);
-      results.push({ version, status: "failed", error: lastLine(stderrText) || "Unknown error" });
+      // A null returncode means the child was killed by a signal (e.g. buffer
+      // overflow SIGTERM) — stderr is empty then, so fall back to the signal
+      // name / spawn error so the failure isn't recorded blank.
+      const error = lastLine(stderrText)
+        || (signal && `terminated by signal ${signal}`)
+        || (spawnError && spawnError.message)
+        || "Unknown error";
+      results.push({ version, status: "failed", error });
     }
 
     // Persist after every iteration so partial results survive a crash.

@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 
@@ -132,9 +133,16 @@ def get_available_versions(package, index_url, cfg=None, verbose=False):
     if verbose:
         _echo(res.stdout, res.stderr)
     if res.returncode != 0:
+        # A negative returncode means the child was killed by a signal, leaving
+        # output empty — fall back to the signal name so the failure isn't blank.
+        detail = _last_line(res.stderr) or _last_line(res.stdout)
+        if not detail and res.returncode < 0:
+            try:
+                detail = f"terminated by signal {signal.Signals(-res.returncode).name}"
+            except ValueError:
+                detail = f"terminated by signal {-res.returncode}"
         print(
-            f"Error querying winget: "
-            f"{_last_line(res.stderr) or _last_line(res.stdout) or 'unknown error'}",
+            f"Error querying winget: {detail or 'unknown error'}",
             file=sys.stderr,
         )
         sys.exit(1)

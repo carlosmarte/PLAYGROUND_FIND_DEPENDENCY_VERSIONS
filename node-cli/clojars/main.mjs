@@ -240,7 +240,11 @@ function ensureClojureVersion(clojureVersion, cfg = null, verbose = false) {
   console.log(`Ensuring clojure==${clojureVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ clojure ${cmd.join(" ")}`);
-  const res = spawnSync("clojure", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("clojure", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (res.error && res.error.code === "ENOENT") {
     console.error(
       `Warning: could not pin clojure==${clojureVersion}: clojure not found on PATH`,
@@ -249,10 +253,13 @@ function ensureClojureVersion(clojureVersion, cfg = null, verbose = false) {
   }
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
-    console.error(
-      `Warning: could not pin clojure==${clojureVersion}: `
-      + `${lastLine(res.stderr) || lastLine(res.stdout) || "unknown error"}`,
-    );
+    // status is null when the child was killed by a signal — stderr/stdout are
+    // empty in that case, so fall back to the signal name / spawn error.
+    const detail = lastLine(res.stderr) || lastLine(res.stdout)
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
+    console.error(`Warning: could not pin clojure==${clojureVersion}: ${detail}`);
   }
 }
 
@@ -340,7 +347,11 @@ export async function testInstallations(repoLocal, pkg, indexUrl, versions, outp
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("mvn", cmd, { encoding: "utf8", env });
+      const res = spawnSync("mvn", cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       if (res.error && res.error.code === "ENOENT") {
         returncode = 1;
         stdoutText = "";
@@ -348,7 +359,11 @@ export async function testInstallations(repoLocal, pkg, indexUrl, versions, outp
       } else {
         returncode = res.status;
         stdoutText = res.stdout;
-        stderrText = res.stderr;
+        // status is null when the child was killed by a signal — stderr is empty
+        // in that case, so fall back to the signal name so the error isn't blank.
+        stderrText = res.stderr
+          || (res.status === null && res.signal && `terminated by signal ${res.signal}`)
+          || res.stderr;
       }
     }
 

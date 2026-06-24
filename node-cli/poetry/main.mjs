@@ -197,12 +197,21 @@ export function setupVenv(envDir, poetryVersion = DEFAULT_POETRY_VERSION, cfg = 
     const cmd = ["init", "-n", "--name", "probe-project", ...poetryOptions(cfg)];
     if (verbose) console.log(`  $ (cd ${envDir} && poetry ${cmd.join(" ")})`);
     const res = spawnSync("poetry", cmd, {
-      cwd: envDir, encoding: "utf8", env: subprocessEnv(cfg),
+      cwd: envDir,
+      encoding: "utf8",
+      env: subprocessEnv(cfg),
+      maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
     });
     if (verbose) echo(res.stdout, res.stderr);
     if (res.status !== 0) {
+      // status is null when the child was killed by a signal — stderr is empty
+      // in that case, so fall back to the signal name / spawn error, not blank.
+      const detail = lastLine(res.stderr)
+        || (res.signal && `terminated by signal ${res.signal}`)
+        || (res.error && res.error.message)
+        || "unknown error";
       console.error(
-        `Warning: could not 'poetry init': ${lastLine(res.stderr) || "unknown error"}`,
+        `Warning: could not 'poetry init': ${detail}`,
       );
     }
   }
@@ -215,11 +224,21 @@ function ensurePoetryVersion(poetryVersion, cfg = null, verbose = false) {
   console.log(`Ensuring poetry==${poetryVersion} for the test project...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ poetry ${cmd.join(" ")}`);
-  const res = spawnSync("poetry", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("poetry", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
+    // status is null when the child was killed by a signal — stderr is empty in
+    // that case, so fall back to the signal name / spawn error rather than blank.
+    const detail = lastLine(res.stderr)
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
     console.error(
-      `Warning: could not verify poetry==${poetryVersion}: ${lastLine(res.stderr) || "unknown error"}`,
+      `Warning: could not verify poetry==${poetryVersion}: ${detail}`,
     );
   }
 }
@@ -301,7 +320,12 @@ export async function testInstallations(venvDir, pkg, indexUrl, versions, output
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("poetry", cmd, { cwd: venvDir, encoding: "utf8", env });
+      const res = spawnSync("poetry", cmd, {
+        cwd: venvDir,
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

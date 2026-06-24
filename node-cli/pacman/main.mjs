@@ -119,13 +119,31 @@ export async function getAvailableVersions(pkg, indexUrl, cfg = null, verbose = 
   const versions = [];
 
   // 1) Current version via `pacman -Si` (best-effort; may be unavailable).
-  const cmd = ["-Si", pkg, ...pacmanOptions(cfg)];
+  // Strip any `--debug` from PACMAN_VERBOSE for this query: we only parse the
+  // single "Version :" line, but `--debug` pacman emits a flood of output —
+  // enough to overflow spawnSync's default 1MB buffer, which kills the child
+  // (status=null) and yields empty output.
+  const cmd = ["-Si", pkg, ...stripVerbose(pacmanOptions(cfg))];
   if (verbose) console.log(`  $ pacman ${cmd.join(" ")}`);
-  const result = spawnSync("pacman", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const result = spawnSync("pacman", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (result.error && result.error.code === "ENOENT") {
     if (verbose) console.log("  (pacman not on PATH; relying on the archive only)");
   } else {
     if (verbose) echo(result.stdout, result.stderr);
+    // status is null when the child was killed by a signal (e.g. spawnSync
+    // SIGTERM on buffer overflow) — output is empty in that case, so surface
+    // the signal name / spawn error so the failure isn't silently swallowed.
+    if (result.status !== 0 && !(result.stdout || "").trim()) {
+      const detail = (result.stderr || "").trim()
+        || (result.signal && `terminated by signal ${result.signal}`)
+        || (result.error && result.error.message)
+        || "unknown error";
+      if (verbose) console.log(`  (pacman -Si failed: ${detail})`);
+    }
     const m = (result.stdout || "").match(/^Version\s*:\s*(\S+)/m);
     if (m) versions.push(m[1]);
   }
@@ -188,7 +206,11 @@ function sortVersionsNewestFirst(versions, cfg = null) {
   cfg = cfg || resolveEnv();
 
   const cmp = (a, b) => {
-    const res = spawnSync("vercmp", [a, b], { encoding: "utf8", env: subprocessEnv(cfg) });
+    const res = spawnSync("vercmp", [a, b], {
+      encoding: "utf8",
+      env: subprocessEnv(cfg),
+      maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+    });
     if (res.error && res.error.code === "ENOENT") {
       return (a > b ? 1 : 0) - (a < b ? 1 : 0);
     }
@@ -232,7 +254,11 @@ function ensurePacmanVersion(pacmanVersion, cfg = null, verbose = false) {
   console.log(`Ensuring pacman==${pacmanVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ pacman ${cmd.join(" ")}`);
-  const res = spawnSync("pacman", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("pacman", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (verbose) echo(res.stdout, res.stderr);
   let have = "";
   for (const line of (res.stdout || "").split(/\r?\n/)) {
@@ -271,6 +297,11 @@ function echo(...texts) {
 /** True if pacman `options` already carry a `--debug` flag. */
 function hasVerbose(options) {
   return options.some((o) => o === "--debug");
+}
+
+/** pacman `options` with any `--debug` verbosity flag removed. */
+function stripVerbose(options) {
+  return options.filter((o) => o !== "--debug");
 }
 
 /**
@@ -349,7 +380,11 @@ export async function testInstallations(cachePath, pkg, indexUrl, versions, outp
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("pacman", cmd, { encoding: "utf8", env });
+      const res = spawnSync("pacman", cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       returncode = res.status;
       stdoutText = res.stdout;
       stderrText = res.stderr;

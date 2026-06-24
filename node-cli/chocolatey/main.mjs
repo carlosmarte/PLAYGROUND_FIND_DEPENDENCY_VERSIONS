@@ -231,7 +231,11 @@ function ensureChocoVersion(envDir, chocoVersion, cfg = null, verbose = false) {
   console.log(`Ensuring choco>=${chocoVersion} in the test environment...`);
   const cmd = ["--version"];
   if (verbose) console.log(`  $ choco ${cmd.join(" ")}`);
-  const res = spawnSync("choco", cmd, { encoding: "utf8", env: subprocessEnv(cfg) });
+  const res = spawnSync("choco", cmd, {
+    encoding: "utf8",
+    env: subprocessEnv(cfg),
+    maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+  });
   if (res.error && res.error.code === "ENOENT") {
     // choco is Windows-only; on other hosts it is simply not on PATH.
     console.error(`Warning: could not verify choco>=${chocoVersion}: ${res.error.message}`);
@@ -239,9 +243,14 @@ function ensureChocoVersion(envDir, chocoVersion, cfg = null, verbose = false) {
   }
   if (verbose) echo(res.stdout, res.stderr);
   if (res.status !== 0) {
+    // status is null when the child was killed by a signal — stderr is empty in
+    // that case, so fall back to the signal name / spawn error.
+    const detail = lastLine(res.stderr)
+      || (res.signal && `terminated by signal ${res.signal}`)
+      || (res.error && res.error.message)
+      || "unknown error";
     console.error(
-      `Warning: could not verify choco>=${chocoVersion}: `
-      + `${lastLine(res.stderr) || "unknown error"}`,
+      `Warning: could not verify choco>=${chocoVersion}: ${detail}`,
     );
   }
 }
@@ -337,7 +346,11 @@ export async function testInstallations(venvDir, pkg, indexUrl, versions, output
       returncode = code;
       stdoutText = stderrText = output; // streamed combined; same text both ways
     } else {
-      const res = spawnSync("choco", cmd, { encoding: "utf8", env });
+      const res = spawnSync("choco", cmd, {
+        encoding: "utf8",
+        env,
+        maxBuffer: 50 * 1024 * 1024, // defensive guard against future verbose output
+      });
       if (res.error && res.error.code === "ENOENT") {
         // choco not on PATH (e.g. non-Windows host). Record and continue.
         returncode = 1;
